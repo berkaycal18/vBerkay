@@ -1,0 +1,17 @@
+{
+  "name": "aetherdrop",
+  "version": "1.0.0",
+  "description": "Magical PC-to-Phone Drag & Drop Instant Teleport Platform",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "localtunnel": "^2.0.2",
+    "qrcode": "^1.5.3",
+    "socket.io": "^4.7.5"
+  }
+}
