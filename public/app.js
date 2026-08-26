@@ -8,37 +8,44 @@ class SoundFx {
   constructor() {
     this.ctx = null;
     this.enabled = true;
+    this.init();
   }
 
   init() {
-    if (!this.ctx) {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (AudioCtx) this.ctx = new AudioCtx();
-    }
+    try {
+      if (!this.ctx) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) this.ctx = new AudioCtx();
+      }
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    } catch (e) {}
   }
 
   // Teleport Warp Sound (PC Drop)
   playTeleport() {
     if (!this.enabled) return;
     this.init();
-    if (!this.ctx) return;
     try {
+      if (!this.ctx) return;
+      if (this.ctx.state === 'suspended') this.ctx.resume();
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
       osc.type = 'sine';
       
       const now = this.ctx.currentTime;
-      osc.frequency.setValueAtTime(300, now);
-      osc.frequency.exponentialRampToValueAtTime(1200, now + 0.25);
+      osc.frequency.setValueAtTime(320, now);
+      osc.frequency.exponentialRampToValueAtTime(1400, now + 0.28);
       
-      gain.gain.setValueAtTime(0.2, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
+      gain.gain.setValueAtTime(0.4, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
       
       osc.connect(gain);
       gain.connect(this.ctx.destination);
       
       osc.start(now);
-      osc.stop(now + 0.25);
+      osc.stop(now + 0.28);
     } catch (e) {}
   }
 
@@ -46,23 +53,24 @@ class SoundFx {
   playArrival() {
     if (!this.enabled) return;
     this.init();
-    if (!this.ctx) return;
     try {
+      if (!this.ctx) return;
+      if (this.ctx.state === 'suspended') this.ctx.resume();
       const now = this.ctx.currentTime;
       [587.33, 880, 1174.66, 1760].forEach((freq, i) => {
         const osc = this.ctx.createOscillator();
         const gain = this.ctx.createGain();
         osc.type = 'triangle';
-        osc.frequency.setValueAtTime(freq, now + i * 0.06);
+        osc.frequency.setValueAtTime(freq, now + i * 0.08);
         
-        gain.gain.setValueAtTime(0.3, now + i * 0.06);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.06 + 0.45);
+        gain.gain.setValueAtTime(0.45, now + i * 0.08);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.5);
         
         osc.connect(gain);
         gain.connect(this.ctx.destination);
         
-        osc.start(now + i * 0.06);
-        osc.stop(now + i * 0.06 + 0.45);
+        osc.start(now + i * 0.08);
+        osc.stop(now + i * 0.08 + 0.5);
       });
     } catch (e) {}
   }
@@ -360,27 +368,16 @@ const state = {
   serverPort: 3456
 };
 
-// URL Parameters & Permanent Persistent Room Management
+// URL Parameters & Unified Shared Room
 const urlParams = new URLSearchParams(window.location.search);
 const joinRoomParam = urlParams.get('join');
 const modeParam = urlParams.get('mode');
 
-// Auto-detect mobile devices or join links
+// Auto-detect mobile devices
 const isMobileDevice = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth < 768;
 
-const STORAGE_KEY_ROOM = 'aetherdrop_permanent_room_id';
-let storedRoom = null;
-try { storedRoom = localStorage.getItem(STORAGE_KEY_ROOM); } catch (e) {}
-
-if (joinRoomParam) {
-  state.roomId = joinRoomParam;
-  try { localStorage.setItem(STORAGE_KEY_ROOM, joinRoomParam); } catch (e) {}
-} else if (storedRoom) {
-  state.roomId = storedRoom;
-} else {
-  state.roomId = 'aether-' + Math.random().toString(36).substring(2, 8);
-  try { localStorage.setItem(STORAGE_KEY_ROOM, state.roomId); } catch (e) {}
-}
+// Permanent shared default room (Both PC and Phone join 'main' unless specified)
+state.roomId = joinRoomParam || 'main';
 
 if (modeParam === 'mobile' || isMobileDevice) {
   state.role = 'mobile';
@@ -388,15 +385,33 @@ if (modeParam === 'mobile' || isMobileDevice) {
   state.role = 'desktop';
 }
 
-// Preserve room in browser address bar permanently so refresh NEVER disconnects
-try {
-  if (window.history && window.history.replaceState) {
-    const currentUrl = new URL(window.location.href);
-    currentUrl.searchParams.set('join', state.roomId);
-    if (state.role === 'mobile') currentUrl.searchParams.set('mode', 'mobile');
-    window.history.replaceState({}, '', currentUrl.toString());
-  }
-} catch (e) {}
+// LocalStorage Persistence for 24-Hour History (Zero-Delay Instant Load on Refresh)
+const STORAGE_HISTORY_KEY = 'aetherdrop_local_history_v2';
+const RETENTION_MS = 24 * 60 * 60 * 1000;
+
+function saveLocalHistory() {
+  try {
+    const now = Date.now();
+    const valid = state.history.filter(item => (item.expiresAt || (item.timestamp + RETENTION_MS)) > now);
+    localStorage.setItem(STORAGE_HISTORY_KEY, JSON.stringify(valid.slice(0, 50)));
+  } catch (e) {}
+}
+
+function loadLocalHistory() {
+  try {
+    const raw = localStorage.getItem(STORAGE_HISTORY_KEY);
+    if (raw) {
+      const items = JSON.parse(raw);
+      const now = Date.now();
+      const valid = items.filter(item => (item.expiresAt || (item.timestamp + RETENTION_MS)) > now);
+      valid.forEach(item => {
+        if (!state.history.some(h => h.id === item.id || (h.timestamp === item.timestamp && h.title === item.title))) {
+          addActivityItem(item, item.senderRole === state.role, false);
+        }
+      });
+    }
+  } catch (e) {}
+}
 
 // DOM Elements
 const desktopView = document.getElementById('desktop-view');
@@ -925,7 +940,9 @@ function createContentCard(item, isSentByMe) {
 
 // Add Item to Stream / Activity Feed
 function addActivityItem(item, isSentByMe) {
-  state.history.unshift(item);
+  if (!state.history.some(h => h.id === item.id)) {
+    state.history.unshift(item);
+  }
 
   const card = createContentCard(item, isSentByMe);
 
@@ -943,6 +960,9 @@ function addActivityItem(item, isSentByMe) {
       mobileFeedCount.textContent = `${state.history.length} Öğe`;
     }
   }
+
+  // Save to browser localStorage so refresh NEVER loses files!
+  saveLocalHistory();
 
   // Refresh lucide icons
   if (window.lucide) window.lucide.createIcons();
@@ -1252,6 +1272,9 @@ async function loadVaultHistory() {
 window.addEventListener('DOMContentLoaded', () => {
   if (window.lucide) window.lucide.createIcons();
   
+  // Load local history immediately (Instant 0ms render on refresh)
+  loadLocalHistory();
+
   // Initialize Cosmic Particle Canvas Engine
   state.cosmic = new CosmicParticleEngine('cosmic-canvas');
 
@@ -1271,9 +1294,11 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     window.removeEventListener('click', enableAudioAndNotif);
     window.removeEventListener('touchstart', enableAudioAndNotif);
+    window.removeEventListener('pointerdown', enableAudioAndNotif);
   };
   window.addEventListener('click', enableAudioAndNotif);
   window.addEventListener('touchstart', enableAudioAndNotif);
+  window.addEventListener('pointerdown', enableAudioAndNotif);
 
   initSocket();
   loadServerInfo();
