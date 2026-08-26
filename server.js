@@ -294,7 +294,10 @@ io.on('connection', (socket) => {
 
   // Instant Teleport Payload (Saved to Disk with 24-Hour Expiry)
   socket.on('teleport', (payload) => {
-    if (!currentRoom) return;
+    if (!currentRoom) {
+      console.log('[TELEPORT] ERROR: no currentRoom for socket', socket.id);
+      return;
+    }
 
     const packet = {
       ...payload,
@@ -310,7 +313,11 @@ io.on('connection', (socket) => {
     if (vaultItems.length > 100) vaultItems = vaultItems.slice(0, 100);
     saveVaultToDisk();
 
+    const socketsInRoom = io.sockets.adapter.rooms.get(currentRoom);
+    console.log(`[TELEPORT] room="${currentRoom}" sender=${socket.id} role=${clientRole} sockets_in_room=${socketsInRoom ? socketsInRoom.size : 0}`);
+    
     socket.to(currentRoom).emit('teleport-receive', packet);
+    console.log(`[TELEPORT] emitted teleport-receive to room "${currentRoom}"`);
   });
 
   // High-Speed Chunk Streaming
