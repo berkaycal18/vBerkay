@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import QRCode from 'qrcode';
 import cors from 'cors';
 import localtunnel from 'localtunnel';
+import { startTunnel as startCloudflareTunnel } from 'untun';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,18 +31,20 @@ app.use(express.static(path.join(__dirname, 'public')));
 let globalTunnel = null;
 let publicUrl = null;
 
-// Helper to get local IPv4 addresses (prioritizing Wi-Fi/Ethernet)
+// Helper to get local IPv4 addresses (prioritizing USB Tethering / Ethernet / Wi-Fi)
 function getLocalIpAddresses() {
   const interfaces = os.networkInterfaces();
   const addresses = [];
   
   for (const name in interfaces) {
     const isVirtual = /virtual|vbox|vmware|wsl|hyper-v|loopback/i.test(name);
+    const isUsb = /rndis|tether|apple|mobile|usb/i.test(name);
+    
     for (const iface of interfaces[name]) {
       if (iface.family === 'IPv4' && !iface.internal) {
-        if (!isVirtual && !iface.address.startsWith('192.168.56.')) {
-          addresses.unshift(iface.address);
-        } else {
+        if (isUsb || iface.address.startsWith('192.168.42.') || iface.address.startsWith('172.20.10.')) {
+          addresses.unshift(iface.address); // Top priority: USB cable tethering!
+        } else if (!isVirtual && !iface.address.startsWith('192.168.56.')) {
           addresses.push(iface.address);
         }
       }
@@ -55,38 +58,42 @@ const PORT = process.env.PORT || 3456;
 // In-memory room state
 const rooms = new Map();
 
-// Helper to start global tunnel
+// Helper to start global Cloudflare tunnel
 async function startTunnel() {
   if (globalTunnel && publicUrl) return publicUrl;
+  
   try {
-    const subdomain = 'aetherdrop-' + Math.random().toString(36).substring(2, 8);
-    globalTunnel = await localtunnel({ port: PORT, subdomain });
-    publicUrl = globalTunnel.url;
+    console.log('⚡ Cloudflare Küresel Tüneli Başlatılıyor...');
+    globalTunnel = await startCloudflareTunnel({ port: PORT });
+    publicUrl = await globalTunnel.getURL();
     
-    globalTunnel.on('close', () => {
-      console.log('⚠️ Global tunnel closed');
-      globalTunnel = null;
-      publicUrl = null;
-      io.emit('tunnel-status', { active: false, publicUrl: null });
-    });
-
-    globalTunnel.on('error', (err) => {
-      console.error('Tunnel error:', err);
-    });
-
-    console.log(`\n🌍 KÜRESEL SERBEST İNTERNET ERİŞİMİ AKTİF: ${publicUrl}\n`);
+    console.log(`\n======================================================`);
+    console.log(`🌍 KÜRESEL SERBEST İNTERNET LİNKİ AKTİF:`);
+    console.log(`👉 ${publicUrl}`);
+    console.log(`(Başka internetten, 4G/5G'den ve başka cihazlardan doğrudan girilebilir)`);
+    console.log(`======================================================\n`);
+    
     io.emit('tunnel-status', { active: true, publicUrl });
     return publicUrl;
   } catch (err) {
-    console.error('Failed to create global tunnel:', err);
-    return null;
+    console.warn('Cloudflare tunnel failed, trying localtunnel fallback:', err.message);
+    try {
+      const subdomain = 'aetherdrop-' + Math.random().toString(36).substring(2, 8);
+      globalTunnel = await localtunnel({ port: PORT, subdomain });
+      publicUrl = globalTunnel.url;
+      io.emit('tunnel-status', { active: true, publicUrl });
+      return publicUrl;
+    } catch (e) {
+      console.error('All tunnels failed:', e);
+      return null;
+    }
   }
 }
 
 // Helper to stop global tunnel
 async function stopTunnel() {
   if (globalTunnel) {
-    globalTunnel.close();
+    if (globalTunnel.close) await globalTunnel.close();
     globalTunnel = null;
     publicUrl = null;
     io.emit('tunnel-status', { active: false, publicUrl: null });
@@ -95,18 +102,21 @@ async function stopTunnel() {
 
 // API endpoint for server info
 app.get('/api/info', async (req, res) => {
+  const host = req.get('host') || '';
+  const isCloudHost = host.includes('render.com') || host.includes('onrender.com') || host.includes('trycloudflare.com') || host.includes('loca.lt');
   const ips = getLocalIpAddresses();
   const primaryIp = ips[0];
   const port = server.address() ? server.address().port : PORT;
-  const localUrl = `http://${primaryIp}:${port}`;
+  const detectedUrl = isCloudHost ? `https://${host}` : `http://${primaryIp}:${port}`;
   
   res.json({
     primaryIp,
     ips,
     port,
-    localUrl,
-    publicUrl,
-    isTunnelActive: !!publicUrl
+    localUrl: detectedUrl,
+    publicUrl: isCloudHost ? `https://${host}` : publicUrl,
+    isCloud: isCloudHost,
+    isTunnelActive: isCloudHost ? true : !!publicUrl
   });
 });
 

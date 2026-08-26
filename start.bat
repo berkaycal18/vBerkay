@@ -7,7 +7,7 @@ echo.
 
 if not exist node_modules (
   echo [1/2] Bagimliliklar yukleniyor...
-  call npm install
+  call npm.cmd install
 )
 
 echo [2/2] Sunucu calistiriliyor...

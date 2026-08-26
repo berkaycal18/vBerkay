@@ -2,16 +2,33 @@
   "name": "aetherdrop",
   "version": "1.0.0",
   "description": "Magical PC-to-Phone Drag & Drop Instant Teleport Platform",
-  "main": "server.js",
+  "main": "electron-main.cjs",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "app": "electron .",
+    "build": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.berkay.aetherdrop",
+    "productName": "AetherDrop",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "portable"
+    }
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "localtunnel": "^2.0.2",
     "qrcode": "^1.5.3",
-    "socket.io": "^4.7.5"
+    "socket.io": "^4.7.5",
+    "untun": "^0.2.2"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3"
   }
 }

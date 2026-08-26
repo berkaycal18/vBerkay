@@ -49,22 +49,297 @@ class SoundFx {
     if (!this.ctx) return;
     try {
       const now = this.ctx.currentTime;
-      [587.33, 880, 1174.66].forEach((freq, i) => {
+      [587.33, 880, 1174.66, 1760].forEach((freq, i) => {
         const osc = this.ctx.createOscillator();
         const gain = this.ctx.createGain();
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(freq, now + i * 0.06);
         
-        gain.gain.setValueAtTime(0.25, now + i * 0.06);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.06 + 0.35);
+        gain.gain.setValueAtTime(0.3, now + i * 0.06);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.06 + 0.45);
         
         osc.connect(gain);
         gain.connect(this.ctx.destination);
         
         osc.start(now + i * 0.06);
-        osc.stop(now + i * 0.06 + 0.35);
+        osc.stop(now + i * 0.06 + 0.45);
       });
     } catch (e) {}
+  }
+}
+
+// Fullscreen Cosmic Star & Stardust Particle Engine
+class CosmicParticleEngine {
+  constructor(canvasId) {
+    this.canvas = document.getElementById(canvasId);
+    if (!this.canvas) return;
+    this.ctx = this.canvas.getContext('2d');
+    this.particles = [];
+    this.rings = [];
+    this.animating = false;
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
+  }
+
+  resize() {
+    if (!this.canvas) return;
+    this.canvas.width = window.innerWidth;
+    this.canvas.height = window.innerHeight;
+  }
+
+  drawStar(cx, cy, spikes, outerRadius, innerRadius, color, alpha, rotation = 0) {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    let rot = (Math.PI / 2) * 3 + rotation;
+    let x = cx;
+    let y = cy;
+    const step = Math.PI / spikes;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - outerRadius);
+    for (let i = 0; i < spikes; i++) {
+      x = cx + Math.cos(rot) * outerRadius;
+      y = cy + Math.sin(rot) * outerRadius;
+      ctx.lineTo(x, y);
+      rot += step;
+
+      x = cx + Math.cos(rot) * innerRadius;
+      y = cy + Math.sin(rot) * innerRadius;
+      ctx.lineTo(x, y);
+      rot += step;
+    }
+    ctx.lineTo(cx, cy - outerRadius);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 18;
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Cosmic Star Explosion when sending from PC
+  triggerSendBurst(originX, originY) {
+    const x = originX || window.innerWidth / 2;
+    const y = originY || window.innerHeight / 2;
+    const colors = ['#6366f1', '#a855f7', '#ec4899', '#38bdf8', '#fbbf24', '#ffffff', '#67e8f9'];
+
+    // Expanding Warp Rings
+    for (let i = 0; i < 3; i++) {
+      this.rings.push({
+        x, y,
+        radius: 10 + i * 25,
+        maxRadius: Math.max(window.innerWidth, window.innerHeight) * 0.8,
+        speed: 15 + i * 5,
+        alpha: 0.85,
+        color: colors[i % colors.length]
+      });
+    }
+
+    // 80 Radiant Exploding Stars & Sparks
+    for (let i = 0; i < 80; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = Math.random() * 14 + 3;
+      const size = Math.random() * 9 + 4;
+      const color = colors[Math.floor(Math.random() * colors.length)];
+      const isStar = Math.random() > 0.3;
+
+      this.particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        size,
+        color,
+        isStar,
+        spikes: Math.random() > 0.5 ? 4 : 5,
+        rotation: Math.random() * Math.PI,
+        rotationSpeed: (Math.random() - 0.5) * 0.25,
+        alpha: 1,
+        decay: Math.random() * 0.016 + 0.012,
+        gravity: 0.16
+      });
+    }
+
+    if (!this.animating) {
+      this.animating = true;
+      this.loop();
+    }
+  }
+
+  // Ethereal Aurora Wave & Starry Rain on Phone Receive
+  triggerArrivalWave() {
+    const colors = ['#38bdf8', '#818cf8', '#c084fc', '#34d399', '#ffffff', '#fbbf24'];
+
+    // Aurora Screen Flash
+    const flash = document.createElement('div');
+    flash.className = 'aurora-screen-burst';
+    document.body.appendChild(flash);
+    setTimeout(() => flash.remove(), 1300);
+
+    // 60 Falling Glowing Stardust Particles
+    for (let i = 0; i < 60; i++) {
+      const x = Math.random() * window.innerWidth;
+      const y = Math.random() * (window.innerHeight * 0.25);
+      const speed = Math.random() * 7 + 2;
+      const size = Math.random() * 8 + 3;
+      const color = colors[Math.floor(Math.random() * colors.length)];
+
+      this.particles.push({
+        x, y,
+        vx: (Math.random() - 0.5) * 3.5,
+        vy: speed,
+        size,
+        color,
+        isStar: true,
+        spikes: 4,
+        rotation: Math.random() * Math.PI,
+        rotationSpeed: (Math.random() - 0.5) * 0.15,
+        alpha: 1,
+        decay: Math.random() * 0.016 + 0.009,
+        gravity: 0.07
+      });
+    }
+
+    if (!this.animating) {
+      this.animating = true;
+      this.loop();
+    }
+  }
+
+  loop() {
+    if (!this.ctx) return;
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+    // Update & draw rings
+    for (let i = this.rings.length - 1; i >= 0; i--) {
+      const ring = this.rings[i];
+      ring.radius += ring.speed;
+      ring.alpha -= 0.022;
+
+      if (ring.alpha <= 0 || ring.radius >= ring.maxRadius) {
+        this.rings.splice(i, 1);
+        continue;
+      }
+
+      this.ctx.save();
+      this.ctx.beginPath();
+      this.ctx.arc(ring.x, ring.y, ring.radius, 0, Math.PI * 2);
+      this.ctx.strokeStyle = ring.color;
+      this.ctx.shadowColor = ring.color;
+      this.ctx.shadowBlur = 24;
+      this.ctx.lineWidth = 3.5 * ring.alpha;
+      this.ctx.globalAlpha = Math.max(0, ring.alpha);
+      this.ctx.stroke();
+      this.ctx.restore();
+    }
+
+    // Update & draw particles
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const p = this.particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += p.gravity;
+      p.vx *= 0.98;
+      p.rotation += p.rotationSpeed;
+      p.alpha -= p.decay;
+
+      if (p.alpha <= 0) {
+        this.particles.splice(i, 1);
+        continue;
+      }
+
+      if (p.isStar) {
+        this.drawStar(p.x, p.y, p.spikes, p.size, p.size * 0.45, p.color, p.alpha, p.rotation);
+      } else {
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        this.ctx.fillStyle = p.color;
+        this.ctx.shadowColor = p.color;
+        this.ctx.shadowBlur = 14;
+        this.ctx.globalAlpha = Math.max(0, p.alpha);
+        this.ctx.fill();
+        this.ctx.restore();
+      }
+    }
+
+    if (this.particles.length > 0 || this.rings.length > 0) {
+      requestAnimationFrame(() => this.loop());
+    } else {
+      this.animating = false;
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+  }
+}
+
+// Browser Push Notification Engine
+class NotificationEngine {
+  constructor() {
+    this.supported = 'Notification' in window;
+    this.permission = this.supported ? Notification.permission : 'denied';
+  }
+
+  async requestPermission() {
+    if (!this.supported) {
+      showToast('Tarayıcınız sistem bildirimlerini desteklemiyor.', 'info');
+      return false;
+    }
+    try {
+      const perm = await Notification.requestPermission();
+      this.permission = perm;
+      if (perm === 'granted') {
+        showToast('🔔 Bildirimler Başarıyla Açıldı!', 'success');
+        this.send('AetherDrop Hazır!', 'Yeni bir dosya veya yazı geldiğinde anında bildirim alacaksınız.');
+        return true;
+      } else {
+        showToast('Bildirim izni verilmedi.', 'info');
+        return false;
+      }
+    } catch (e) {
+      return false;
+    }
+  }
+
+  send(title, body) {
+    if (!this.supported || this.permission !== 'granted') return;
+    try {
+      const notif = new Notification(`🛸 ${title}`, {
+        body: body || 'Yeni bir öğe ışınlandı!',
+        icon: 'https://fav.farm/✨',
+        badge: 'https://fav.farm/⚡',
+        vibrate: [120, 60, 180]
+      });
+
+      notif.onclick = () => {
+        window.focus();
+        notif.close();
+      };
+    } catch (e) {}
+  }
+
+  notifyItem(item) {
+    let title = 'Yeni Öğe Düştü!';
+    let body = item.title || item.name || 'İçerik ışınlandı';
+
+    if (item.type === 'image') {
+      title = '📷 Yeni Fotoğraf Geldi!';
+      body = `${item.name || 'Fotoğraf'} telefonunuza ulaştı.`;
+    } else if (item.type === 'video') {
+      title = '🎬 Yeni Video Geldi!';
+      body = `${item.name || 'Video'} ulaştı.`;
+    } else if (item.type === 'text') {
+      title = '📝 Yeni Not / Metin!';
+      body = item.content ? item.content.slice(0, 80) : 'Metin ulaştı.';
+    } else if (item.type === 'url') {
+      title = '🔗 Yeni Web Bağlantısı!';
+      body = item.content || 'Bağlantı ulaştı.';
+    } else {
+      title = '📄 Yeni Dosya Geldi!';
+      body = `${item.name || 'Dosya'} (${formatFileSize(item.size || 0)})`;
+    }
+
+    this.send(title, body);
   }
 }
 
@@ -74,6 +349,8 @@ const state = {
   role: 'desktop', // 'desktop' or 'mobile'
   roomId: null,
   sound: new SoundFx(),
+  cosmic: null,
+  notifications: new NotificationEngine(),
   activePeers: 0,
   history: [],
   pingInterval: null,
@@ -274,7 +551,15 @@ async function loadServerInfo() {
 
 // Update Network Display & Regenerate QR
 async function updateNetworkDisplay() {
-  const activeBaseUrl = (state.networkMode === 'global' && state.publicUrl) ? state.publicUrl : (state.localUrl || window.location.origin);
+  const isCloudOrWeb = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+  let activeBaseUrl = window.location.origin;
+
+  if (!isCloudOrWeb) {
+    activeBaseUrl = (state.networkMode === 'global' && state.publicUrl) ? state.publicUrl : (state.localUrl || window.location.origin);
+  } else if (state.publicUrl && state.networkMode === 'global') {
+    activeBaseUrl = state.publicUrl;
+  }
+  
   const mobileJoinUrl = `${activeBaseUrl}/?join=${state.roomId}&mode=mobile`;
   
   if (mobileJoinUrlInput) mobileJoinUrlInput.value = mobileJoinUrl;
@@ -362,6 +647,11 @@ async function sendTeleportPayload(payload) {
   // Play sci-fi teleport sound
   state.sound.playTeleport();
 
+  // Trigger Cosmic Starburst Particle Explosion on PC Screen
+  if (state.cosmic) {
+    state.cosmic.triggerSendBurst();
+  }
+
   // Send packet over socket
   state.socket.emit('teleport', payload);
 
@@ -441,8 +731,19 @@ function processAndSendText(rawText) {
 // Handle Incoming Packet on Receiver (Mobile / Peer)
 function handleIncomingPacket(packet) {
   state.sound.playArrival();
+
+  // Trigger Ethereal Aurora Wave & Star Shower Animation
+  if (state.cosmic) {
+    state.cosmic.triggerArrivalWave();
+  }
+
+  // Trigger Native Push Notification
+  if (state.notifications) {
+    state.notifications.notifyItem(packet);
+  }
+
   if (navigator.vibrate) {
-    navigator.vibrate([120, 60, 120]);
+    navigator.vibrate([120, 60, 180]);
   }
 
   addActivityItem(packet, false);
@@ -453,7 +754,7 @@ function handleIncomingPacket(packet) {
 function createContentCard(item, isSentByMe) {
   const timeStr = new Date(item.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const card = document.createElement('div');
-  card.className = 'teleport-item-card glass-panel rounded-2xl p-4 sm:p-5 flex flex-col gap-3 border border-white/10 hover:border-indigo-500/40 transition';
+  card.className = `teleport-item-card glass-panel rounded-2xl p-4 sm:p-5 flex flex-col gap-3 border border-white/10 hover:border-indigo-500/40 transition ${!isSentByMe ? 'just-arrived' : ''}`;
 
   let iconHtml = '<i data-lucide="file" class="w-5 h-5 text-indigo-400"></i>';
   let bodyHtml = '';
@@ -883,6 +1184,30 @@ if ('serviceWorker' in navigator) {
 // Start Application
 window.addEventListener('DOMContentLoaded', () => {
   if (window.lucide) window.lucide.createIcons();
+  
+  // Initialize Cosmic Particle Canvas Engine
+  state.cosmic = new CosmicParticleEngine('cosmic-canvas');
+
+  // Notification Button Handler
+  const btnToggleNotif = document.getElementById('btn-toggle-notif');
+  if (btnToggleNotif) {
+    btnToggleNotif.addEventListener('click', async () => {
+      await state.notifications.requestPermission();
+    });
+  }
+
+  // Auto-request sound & notification on first user interaction
+  const enableAudioAndNotif = () => {
+    state.sound.init();
+    if (state.notifications && state.notifications.permission === 'default') {
+      state.notifications.requestPermission();
+    }
+    window.removeEventListener('click', enableAudioAndNotif);
+    window.removeEventListener('touchstart', enableAudioAndNotif);
+  };
+  window.addEventListener('click', enableAudioAndNotif);
+  window.addEventListener('touchstart', enableAudioAndNotif);
+
   initSocket();
   loadServerInfo();
 });

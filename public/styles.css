@@ -123,18 +123,86 @@ body {
   background: rgba(99, 102, 241, 0.7);
 }
 
-/* Item entrance animation */
+/* Item entrance animation with crystal glow */
 @keyframes slideUpFade {
-  from {
+  0% {
     opacity: 0;
-    transform: translateY(20px) scale(0.96);
+    transform: translateY(28px) scale(0.92) rotate(-0.5deg);
+    filter: blur(4px);
   }
-  to {
+  60% {
+    transform: translateY(-4px) scale(1.02) rotate(0deg);
+    filter: blur(0px);
+  }
+  100% {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0) scale(1) rotate(0deg);
+  }
+}
+
+@keyframes arrivalNeonPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.8), 0 0 30px rgba(56, 189, 248, 0.6);
+    border-color: rgba(99, 102, 241, 0.9);
+  }
+  50% {
+    box-shadow: 0 0 35px 8px rgba(168, 85, 247, 0.5), 0 0 60px rgba(56, 189, 248, 0.4);
+    border-color: rgba(56, 189, 248, 0.8);
+  }
+  100% {
+    box-shadow: 0 0 15px rgba(99, 102, 241, 0.15);
+    border-color: var(--card-border);
   }
 }
 
 .teleport-item-card {
-  animation: slideUpFade 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: slideUpFade 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  transition: all 0.3s ease;
 }
+
+.teleport-item-card.just-arrived {
+  animation: slideUpFade 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards, arrivalNeonPulse 2.8s ease-out forwards;
+}
+
+/* Fullscreen Cosmic Canvas */
+#cosmic-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Aurora Screen Flash for Mobile Arrival */
+@keyframes auroraFlash {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  30% {
+    opacity: 0.85;
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.4);
+  }
+}
+
+.aurora-screen-burst {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9998;
+  background: radial-gradient(circle at 50% 30%, rgba(99, 102, 241, 0.35) 0%, rgba(168, 85, 247, 0.25) 40%, rgba(56, 189, 248, 0.15) 70%, transparent 100%);
+  animation: auroraFlash 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Star Sparkle Micro-badge */
+.sparkle-badge {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(236, 72, 153, 0.2));
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  animation: pulseGlow 2s infinite ease-in-out;
+}
+
