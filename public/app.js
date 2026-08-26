@@ -492,6 +492,17 @@ function initSocket() {
     handleIncomingPacket(packet);
   });
 
+  // Handle 3-Day Persistent Room History
+  state.socket.on('room-vault-history', (items) => {
+    if (!items || items.length === 0) return;
+    items.forEach(item => {
+      // Avoid duplicate display
+      if (!state.history.some(h => h.id === item.id || (h.timestamp === item.timestamp && h.title === item.title))) {
+        addActivityItem(item, item.senderRole === state.role);
+      }
+    });
+  });
+
   // Pong for latency
   state.socket.on('pong-peer', ({ timestamp }) => {
     const rtt = Date.now() - timestamp;
@@ -850,6 +861,12 @@ function createContentCard(item, isSentByMe) {
     `;
   }
 
+  const expiresAt = item.expiresAt || (item.timestamp ? item.timestamp + (3 * 24 * 60 * 60 * 1000) : Date.now() + (3 * 24 * 60 * 60 * 1000));
+  const remainingHours = Math.max(0, Math.round((expiresAt - Date.now()) / (1000 * 60 * 60)));
+  const daysLeft = Math.floor(remainingHours / 24);
+  const hoursLeft = remainingHours % 24;
+  const expiryText = daysLeft > 0 ? `${daysLeft} gün ${hoursLeft}s kaldı` : `${hoursLeft}s kaldı`;
+
   card.innerHTML = `
     <div class="flex items-center justify-between border-b border-slate-800/80 pb-2.5">
       <div class="flex items-center gap-2.5">
@@ -858,7 +875,12 @@ function createContentCard(item, isSentByMe) {
         </div>
         <div>
           <h4 class="text-xs sm:text-sm font-bold text-slate-200 truncate max-w-[200px] sm:max-w-xs">${item.title || item.name || 'Işınlanan Öğe'}</h4>
-          <span class="text-[10px] text-slate-500 font-mono">${timeStr} • ${isSentByMe ? 'Gönderildi' : 'Alındı'}</span>
+          <div class="flex items-center gap-2 mt-0.5">
+            <span class="text-[10px] text-slate-500 font-mono">${timeStr} • ${isSentByMe ? 'Gönderildi' : 'Alındı'}</span>
+            <span class="text-[10px] text-amber-300/90 bg-amber-500/10 px-1.5 py-0.5 rounded-md border border-amber-500/30 flex items-center gap-1 font-mono">
+              <i data-lucide="timer" class="w-3 h-3 text-amber-400"></i> ${expiryText}
+            </span>
+          </div>
         </div>
       </div>
       <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${isSentByMe ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}">

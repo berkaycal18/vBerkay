@@ -53,10 +53,24 @@ function getLocalIpAddresses() {
   return addresses.length > 0 ? addresses : ['127.0.0.1'];
 }
 
-const PORT = process.env.PORT || 3456;
-
-// In-memory room state
+// In-memory room state and 3-Day Persistent Vault
 const rooms = new Map();
+const roomVaults = new Map(); // roomId -> Array of { packet, expiresAt }
+const VAULT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000; // 3 Days (72 Hours)
+
+// Clean expired vault items periodically
+function cleanExpiredVaultItems() {
+  const now = Date.now();
+  for (const [roomId, items] of roomVaults.entries()) {
+    const validItems = items.filter(item => item.expiresAt > now);
+    if (validItems.length === 0) {
+      roomVaults.delete(roomId);
+    } else {
+      roomVaults.set(roomId, validItems);
+    }
+  }
+}
+setInterval(cleanExpiredVaultItems, 30 * 60 * 1000); // Check every 30 mins
 
 // Helper to start global Cloudflare tunnel
 async function startTunnel() {
@@ -157,6 +171,18 @@ app.get('/api/qr', async (req, res) => {
   }
 });
 
+// API endpoint to fetch 3-day room vault history
+app.get('/api/room/:roomId/history', (req, res) => {
+  const roomId = req.params.roomId;
+  const now = Date.now();
+  if (roomVaults.has(roomId)) {
+    const items = roomVaults.get(roomId).filter(item => item.expiresAt > now);
+    res.json({ items });
+  } else {
+    res.json({ items: [] });
+  }
+});
+
 // Socket.io Real-Time Teleport Logic
 io.on('connection', (socket) => {
   let currentRoom = null;
@@ -206,6 +232,13 @@ io.on('connection', (socket) => {
         });
       }
 
+      // Send active 3-day room vault history to new peer
+      if (roomVaults.has(currentRoom)) {
+        const now = Date.now();
+        const activeItems = roomVaults.get(currentRoom).filter(item => item.expiresAt > now);
+        socket.emit('room-vault-history', activeItems);
+      }
+
       socket.emit('room-status', {
         hasDesktop: !!room.desktop,
         connectedMobiles: room.mobiles.size,
@@ -229,7 +262,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Instant Teleport Payload
+  // Instant Teleport Payload (Saved in 3-Day Vault)
   socket.on('teleport', (payload) => {
     if (!currentRoom) return;
 
@@ -237,9 +270,18 @@ io.on('connection', (socket) => {
       ...payload,
       id: payload.id || 'tp_' + Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
+      expiresAt: Date.now() + VAULT_RETENTION_MS,
       senderId: socket.id,
       senderRole: clientRole
     };
+
+    // Store in 3-day persistent room vault
+    if (!roomVaults.has(currentRoom)) {
+      roomVaults.set(currentRoom, []);
+    }
+    const vault = roomVaults.get(currentRoom);
+    vault.push(packet);
+    if (vault.length > 50) vault.shift(); // Keep latest 50 items
 
     socket.to(currentRoom).emit('teleport-receive', packet);
   });
