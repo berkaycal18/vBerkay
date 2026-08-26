@@ -540,12 +540,45 @@ function initSocket() {
     });
   });
 
+  // Handle remote vault-cleared broadcast (e.g. other device pressed Temizle)
+  state.socket.on('vault-cleared', () => {
+    state.history = [];
+    try { localStorage.removeItem(STORAGE_HISTORY_KEY); } catch (e) {}
+    if (recentActivityFeed) {
+      recentActivityFeed.innerHTML = `
+        <div id="history-empty-state" class="text-center py-8 text-slate-500 text-xs flex flex-col items-center gap-2">
+          <i data-lucide="inbox" class="w-8 h-8 text-slate-600"></i>
+          <span>Geçmiş temizlendi.</span>
+        </div>
+      `;
+    }
+    if (mobileStreamList) {
+      mobileStreamList.innerHTML = `
+        <div id="mobile-empty-state" class="glass-panel rounded-2xl p-8 text-center flex flex-col items-center justify-center gap-3 my-auto">
+          <div class="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+            <i data-lucide="satellite" class="w-7 h-7"></i>
+          </div>
+          <div>
+            <h4 class="text-sm font-bold text-slate-200">Geçmiş Temizlendi</h4>
+          </div>
+        </div>
+      `;
+      if (mobileFeedCount) mobileFeedCount.textContent = '0 Öğe';
+    }
+    if (window.lucide) window.lucide.createIcons();
+    showToast('🗑️ Geçmiş temizlendi!', 'info');
+  });
+
   // Pong for latency
   state.socket.on('pong-peer', ({ timestamp }) => {
     const rtt = Date.now() - timestamp;
     if (pingText) pingText.textContent = `${rtt} ms`;
   });
+
+  // Init sound on socket connect so first interaction plays audio
+  state.sound.init();
 }
+
 
 function startPingHeartbeat() {
   if (state.pingInterval) clearInterval(state.pingInterval);
@@ -1174,17 +1207,48 @@ if (btnMobileSend) {
   });
 }
 
-// Clear History Button
-if (btnClearHistory && recentActivityFeed) {
-  btnClearHistory.addEventListener('click', () => {
+// Clear History Button — wipes localStorage + server vault + UI
+if (btnClearHistory) {
+  btnClearHistory.addEventListener('click', async () => {
+    if (!confirm('Tüm geçmişi ve depolanan dosyaları temizlemek istediğinize emin misiniz?\n\nBu işlem geri alınamaz.')) return;
+
+    // 1. Clear in-memory state
     state.history = [];
-    recentActivityFeed.innerHTML = `
-      <div id="history-empty-state" class="text-center py-8 text-slate-500 text-xs flex flex-col items-center gap-2">
-        <i data-lucide="inbox" class="w-8 h-8 text-slate-600"></i>
-        <span>Geçmiş temizlendi.</span>
-      </div>
-    `;
+
+    // 2. Clear localStorage
+    try { localStorage.removeItem(STORAGE_HISTORY_KEY); } catch (e) {}
+
+    // 3. Call server to clear vault
+    try { await fetch('/api/clear', { method: 'POST' }); } catch (e) {}
+
+    // 4. Clear desktop feed UI
+    if (recentActivityFeed) {
+      recentActivityFeed.innerHTML = `
+        <div id="history-empty-state" class="text-center py-8 text-slate-500 text-xs flex flex-col items-center gap-2">
+          <i data-lucide="inbox" class="w-8 h-8 text-slate-600"></i>
+          <span>Geçmiş temizlendi.</span>
+        </div>
+      `;
+    }
+
+    // 5. Clear mobile feed UI
+    if (mobileStreamList) {
+      mobileStreamList.innerHTML = `
+        <div id="mobile-empty-state" class="glass-panel rounded-2xl p-8 text-center flex flex-col items-center justify-center gap-3 my-auto">
+          <div class="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+            <i data-lucide="satellite" class="w-7 h-7"></i>
+          </div>
+          <div>
+            <h4 class="text-sm font-bold text-slate-200">Geçmiş Temizlendi</h4>
+            <p class="text-xs text-slate-400 mt-1">Yeni içerik bekleniyor...</p>
+          </div>
+        </div>
+      `;
+      if (mobileFeedCount) mobileFeedCount.textContent = '0 Öğe';
+    }
+
     if (window.lucide) window.lucide.createIcons();
+    showToast('🗑️ Tüm geçmiş temizlendi!', 'info');
   });
 }
 

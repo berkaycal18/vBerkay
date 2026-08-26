@@ -206,7 +206,16 @@ app.get('/api/room/:roomId/history', (req, res) => {
   res.json({ items: activeItems });
 });
 
-// Socket.io Real-Time Teleport Logic
+// POST /api/clear — wipe entire vault from disk and broadcast clear to all clients
+app.post('/api/clear', (req, res) => {
+  vaultItems = [];
+  try { fs.writeFileSync(VAULT_FILE, '[]', 'utf-8'); } catch (e) {}
+  // Broadcast clear event to all connected sockets
+  io.emit('vault-cleared');
+  res.json({ ok: true });
+});
+
+
 io.on('connection', (socket) => {
   let currentRoom = null;
   let clientRole = null;
