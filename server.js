@@ -54,6 +54,8 @@ function getLocalIpAddresses() {
   return addresses.length > 0 ? addresses : ['127.0.0.1'];
 }
 
+const PORT = process.env.PORT || 3456;
+
 // In-memory room state and 24-Hour (1 Day) Persistent Vault Storage
 const rooms = new Map();
 const VAULT_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 Hours (1 Day) Auto-Expiry
