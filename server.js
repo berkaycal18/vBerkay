@@ -61,7 +61,7 @@ const rooms = new Map();
 const VAULT_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 Hours (1 Day) Auto-Expiry
 const VAULT_FILE = path.join(__dirname, 'vault_storage.json');
 
-let clearTime = 0;
+let clearTimes = {};
 
 // Load vault items from disk
 function loadVaultFromDisk() {
@@ -70,7 +70,11 @@ function loadVaultFromDisk() {
       const data = JSON.parse(fs.readFileSync(VAULT_FILE, 'utf-8'));
       const now = Date.now();
       if (data && typeof data === 'object' && !Array.isArray(data)) {
-        clearTime = data.clearTime || 0;
+        clearTimes = data.clearTimes || {};
+        // Fallback for older database formats that only had a single clearTime
+        if (data.clearTime && Object.keys(clearTimes).length === 0) {
+          clearTimes['main'] = data.clearTime;
+        }
         const items = data.items || [];
         return items.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
       } else if (Array.isArray(data)) {
@@ -90,7 +94,7 @@ function saveVaultToDisk() {
   try {
     const now = Date.now();
     vaultItems = vaultItems.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
-    fs.writeFileSync(VAULT_FILE, JSON.stringify({ items: vaultItems, clearTime }), 'utf-8');
+    fs.writeFileSync(VAULT_FILE, JSON.stringify({ items: vaultItems, clearTimes }), 'utf-8');
   } catch (e) {
     console.error('Error saving vault storage:', e);
   }
@@ -201,26 +205,37 @@ app.get('/api/qr', async (req, res) => {
   }
 });
 
-// API endpoint to fetch 24-hour vault history
+// API endpoint to fetch 24-hour vault history (main room only)
 app.get('/api/history', (req, res) => {
   const now = Date.now();
-  const activeItems = vaultItems.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
+  const activeItems = vaultItems.filter(item => (!item.roomId || item.roomId === 'main') && (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
   res.json({ items: activeItems });
 });
 
+// API endpoint to fetch room-scoped history
 app.get('/api/room/:roomId/history', (req, res) => {
   const now = Date.now();
-  const activeItems = vaultItems.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
+  const targetRoom = req.params.roomId || 'main';
+  const activeItems = vaultItems.filter(item => item.roomId === targetRoom && (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
   res.json({ items: activeItems });
 });
 
-// POST /api/clear — wipe entire vault from disk and broadcast clear to all clients
+// POST /api/clear — wipe main vault and broadcast clear to main clients
 app.post('/api/clear', (req, res) => {
-  vaultItems = [];
-  clearTime = Date.now();
+  vaultItems = vaultItems.filter(item => item.roomId && item.roomId !== 'main');
+  clearTimes['main'] = Date.now();
   saveVaultToDisk();
-  // Broadcast clear event to all connected sockets
-  io.emit('vault-cleared', { clearTime });
+  io.to('main').emit('vault-cleared', { clearTime: clearTimes['main'] });
+  res.json({ ok: true });
+});
+
+// POST /api/room/:roomId/clear — wipe room vault and broadcast clear to that room
+app.post('/api/room/:roomId/clear', (req, res) => {
+  const targetRoom = req.params.roomId || 'main';
+  vaultItems = vaultItems.filter(item => item.roomId !== targetRoom);
+  clearTimes[targetRoom] = Date.now();
+  saveVaultToDisk();
+  io.to(targetRoom).emit('vault-cleared', { clearTime: clearTimes[targetRoom] });
   res.json({ ok: true });
 });
 
@@ -283,8 +298,9 @@ io.on('connection', (socket) => {
 
     // Unconditionally send all active 24-hour vault items to connecting device (desktop or mobile)
     const now = Date.now();
-    const activeItems = vaultItems.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
-    socket.emit('room-vault-history', { items: activeItems, clearTime });
+    const activeItems = vaultItems.filter(item => item.roomId === currentRoom && (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
+    const roomClearTime = clearTimes[currentRoom] || 0;
+    socket.emit('room-vault-history', { items: activeItems, clearTime: roomClearTime });
   });
 
   // WebRTC P2P Signaling
@@ -311,6 +327,7 @@ io.on('connection', (socket) => {
 
     const packet = {
       ...payload,
+      roomId: currentRoom,
       id: payload.id || 'tp_' + Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
       expiresAt: Date.now() + VAULT_RETENTION_MS,

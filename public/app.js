@@ -370,14 +370,28 @@ const state = {
 
 // URL Parameters & Unified Shared Room
 const urlParams = new URLSearchParams(window.location.search);
-const joinRoomParam = urlParams.get('join');
+let joinRoomParam = urlParams.get('join');
 const modeParam = urlParams.get('mode');
 
 // Auto-detect mobile devices
 const isMobileDevice = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth < 768;
 
-// Permanent shared default room (Both PC and Phone join 'main' unless specified)
-state.roomId = joinRoomParam || 'main';
+// If no room is specified in URL, retrieve from localStorage or generate a fresh unique one
+if (!joinRoomParam) {
+  const storedRoom = localStorage.getItem('aetherdrop_my_room_id');
+  if (storedRoom) {
+    joinRoomParam = storedRoom;
+  } else {
+    // Generate a secure random room ID (e.g. room_a1b2c3d4e)
+    joinRoomParam = 'room_' + Math.random().toString(36).substr(2, 9);
+    localStorage.setItem('aetherdrop_my_room_id', joinRoomParam);
+  }
+  // Update URL silently without reloading the page
+  urlParams.set('join', joinRoomParam);
+  window.history.replaceState({}, '', `${window.location.pathname}?${urlParams.toString()}`);
+}
+
+state.roomId = joinRoomParam;
 
 if (modeParam === 'mobile' || isMobileDevice) {
   state.role = 'mobile';
@@ -1276,7 +1290,7 @@ if (btnClearHistory) {
     try { localStorage.removeItem(STORAGE_HISTORY_KEY); } catch (e) {}
 
     // 3. Call server to clear vault
-    try { await fetch('/api/clear', { method: 'POST' }); } catch (e) {}
+    try { await fetch(`/api/room/${state.roomId}/clear`, { method: 'POST' }); } catch (e) {}
 
     // 4. Clear desktop feed UI
     if (recentActivityFeed) {
@@ -1393,7 +1407,7 @@ if ('serviceWorker' in navigator) {
 
 async function loadVaultHistory() {
   try {
-    const res = await fetch('/api/history');
+    const res = await fetch(`/api/room/${state.roomId}/history`);
     const data = await res.json();
     if (data.items && Array.isArray(data.items)) {
       const reversed = [...data.items].reverse();
