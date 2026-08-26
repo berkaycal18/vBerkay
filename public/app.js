@@ -378,17 +378,25 @@ const isMobileDevice = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAge
 
 // If no room is specified in URL, retrieve from localStorage or generate a fresh unique one
 if (!joinRoomParam) {
-  const storedRoom = localStorage.getItem('aetherdrop_my_room_id');
+  let storedRoom = null;
+  try {
+    storedRoom = localStorage.getItem('aetherdrop_my_room_id');
+  } catch (e) {}
+
   if (storedRoom) {
     joinRoomParam = storedRoom;
   } else {
     // Generate a secure random room ID (e.g. room_a1b2c3d4e)
     joinRoomParam = 'room_' + Math.random().toString(36).substr(2, 9);
-    localStorage.setItem('aetherdrop_my_room_id', joinRoomParam);
+    try {
+      localStorage.setItem('aetherdrop_my_room_id', joinRoomParam);
+    } catch (e) {}
   }
   // Update URL silently without reloading the page
-  urlParams.set('join', joinRoomParam);
-  window.history.replaceState({}, '', `${window.location.pathname}?${urlParams.toString()}`);
+  try {
+    urlParams.set('join', joinRoomParam);
+    window.history.replaceState({}, '', `${window.location.pathname}?${urlParams.toString()}`);
+  } catch (e) {}
 }
 
 state.roomId = joinRoomParam;
@@ -557,7 +565,10 @@ function initSocket() {
     }
 
     // Sync clear state if the server was cleared after our last active session
-    const localLastClear = parseInt(localStorage.getItem(STORAGE_CLEAR_TIME_KEY) || '0', 10);
+    let localLastClear = 0;
+    try {
+      localLastClear = parseInt(localStorage.getItem(STORAGE_CLEAR_TIME_KEY) || '0', 10);
+    } catch (e) {}
     if (serverClearTime > localLastClear) {
       state.history = [];
       try {
