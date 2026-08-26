@@ -15,7 +15,7 @@
   <!-- Socket.IO Local -->
   <script src="/socket.io/socket.io.js"></script>
   <!-- Custom Offline Resilient Styles -->
-  <link rel="stylesheet" href="/styles.css?v=4.0">
+  <link rel="stylesheet" href="/styles.css?v=4.2">
 </head>
 <body class="bg-[#07090e] text-slate-100 flex flex-col min-h-screen selection:bg-indigo-500 selection:text-white">
 
@@ -277,6 +277,18 @@
     <!-- MOBILE VIEW CONTAINER (Responsive Live Stream for Phone) -->
     <div id="mobile-view" class="hidden flex-col gap-4 max-w-md mx-auto w-full">
       
+      <!-- Sound Unlock Banner (dismisses on first tap) -->
+      <div id="sound-unlock-banner" class="glass-panel rounded-2xl p-3 flex items-center gap-3 border border-amber-500/40 bg-amber-500/10 cursor-pointer" onclick="unlockMobileSound()">
+        <div class="w-9 h-9 rounded-xl bg-amber-500/20 flex items-center justify-center text-amber-400 flex-shrink-0">
+          <i data-lucide="volume-2" class="w-5 h-5"></i>
+        </div>
+        <div class="flex-1">
+          <p class="text-xs font-bold text-amber-300">🔔 Bildirim sesini etkinleştirmek için buraya dokun</p>
+          <p class="text-[10px] text-amber-400/70 mt-0.5">Telefon tarayıcısı izin gerektiriyor</p>
+        </div>
+        <i data-lucide="x" class="w-4 h-4 text-amber-400/60"></i>
+      </div>
+
       <!-- Mobile Hero Status Banner -->
       <div class="glass-panel rounded-2xl p-4 flex items-center justify-between border-indigo-500/30">
         <div class="flex items-center gap-3">

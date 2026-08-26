@@ -816,7 +816,13 @@ function processAndSendText(rawText) {
 
 // Handle Incoming Packet on Receiver (Mobile / Peer)
 function handleIncomingPacket(packet) {
-  state.sound.playArrival();
+  // Force AudioContext resume before playing (mobile browsers block audio until user interacts)
+  if (state.sound.ctx && state.sound.ctx.state === 'suspended') {
+    state.sound.ctx.resume().then(() => state.sound.playArrival()).catch(() => {});
+  } else {
+    state.sound.init();
+    state.sound.playArrival();
+  }
 
   // Trigger Ethereal Aurora Wave & Star Shower Animation
   if (state.cosmic) {
@@ -1286,6 +1292,25 @@ window.copyToClipboard = function(text) {
   }).catch(() => {
     showToast('Kopyalama başarısız oldu.', 'error');
   });
+};
+
+// Mobile Sound Unlock — tap banner to unlock audio on first user gesture
+window.unlockMobileSound = function() {
+  state.sound.init();
+  if (state.sound.ctx) {
+    state.sound.ctx.resume().then(() => {
+      // Play a tiny silent sound to unlock audio
+      state.sound.playArrival();
+    }).catch(() => {});
+  }
+  // Dismiss the banner
+  const banner = document.getElementById('sound-unlock-banner');
+  if (banner) {
+    banner.style.transition = 'opacity 0.3s';
+    banner.style.opacity = '0';
+    setTimeout(() => banner.remove(), 300);
+  }
+  showToast('🔔 Bildirim sesi etkinleştirildi!', 'success');
 };
 
 function formatFileSize(bytes) {
