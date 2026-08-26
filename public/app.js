@@ -1231,6 +1231,23 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+async function loadVaultHistory() {
+  try {
+    const res = await fetch('/api/history');
+    const data = await res.json();
+    if (data.items && Array.isArray(data.items)) {
+      const reversed = [...data.items].reverse();
+      reversed.forEach(item => {
+        if (!state.history.some(h => h.id === item.id)) {
+          addActivityItem(item, item.senderRole === state.role);
+        }
+      });
+    }
+  } catch (e) {
+    console.error('Error loading vault history:', e);
+  }
+}
+
 // Start Application
 window.addEventListener('DOMContentLoaded', () => {
   if (window.lucide) window.lucide.createIcons();
@@ -1260,4 +1277,5 @@ window.addEventListener('DOMContentLoaded', () => {
 
   initSocket();
   loadServerInfo();
+  loadVaultHistory();
 });

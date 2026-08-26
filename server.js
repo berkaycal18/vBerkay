@@ -3,6 +3,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import os from 'os';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import QRCode from 'qrcode';
 import cors from 'cors';
@@ -53,24 +54,43 @@ function getLocalIpAddresses() {
   return addresses.length > 0 ? addresses : ['127.0.0.1'];
 }
 
-// In-memory room state and 24-Hour (1 Day) Persistent Vault
+// In-memory room state and 24-Hour (1 Day) Persistent Vault Storage
 const rooms = new Map();
-const roomVaults = new Map(); // roomId -> Array of { packet, expiresAt }
 const VAULT_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 Hours (1 Day) Auto-Expiry
+const VAULT_FILE = path.join(__dirname, 'vault_storage.json');
+
+// Load vault items from disk
+function loadVaultFromDisk() {
+  try {
+    if (fs.existsSync(VAULT_FILE)) {
+      const data = JSON.parse(fs.readFileSync(VAULT_FILE, 'utf-8'));
+      const now = Date.now();
+      return Array.isArray(data) ? data.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now) : [];
+    }
+  } catch (e) {
+    console.error('Error loading vault storage:', e);
+  }
+  return [];
+}
+
+let vaultItems = loadVaultFromDisk();
+
+// Save vault items to disk
+function saveVaultToDisk() {
+  try {
+    const now = Date.now();
+    vaultItems = vaultItems.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
+    fs.writeFileSync(VAULT_FILE, JSON.stringify(vaultItems), 'utf-8');
+  } catch (e) {
+    console.error('Error saving vault storage:', e);
+  }
+}
 
 // Clean expired vault items periodically
 function cleanExpiredVaultItems() {
-  const now = Date.now();
-  for (const [roomId, items] of roomVaults.entries()) {
-    const validItems = items.filter(item => item.expiresAt > now);
-    if (validItems.length === 0) {
-      roomVaults.delete(roomId);
-    } else {
-      roomVaults.set(roomId, validItems);
-    }
-  }
+  saveVaultToDisk();
 }
-setInterval(cleanExpiredVaultItems, 30 * 60 * 1000); // Check every 30 mins
+setInterval(cleanExpiredVaultItems, 15 * 60 * 1000); // Check every 15 mins
 
 // Helper to start global Cloudflare tunnel
 async function startTunnel() {
@@ -171,16 +191,17 @@ app.get('/api/qr', async (req, res) => {
   }
 });
 
-// API endpoint to fetch 3-day room vault history
-app.get('/api/room/:roomId/history', (req, res) => {
-  const roomId = req.params.roomId;
+// API endpoint to fetch 24-hour vault history
+app.get('/api/history', (req, res) => {
   const now = Date.now();
-  if (roomVaults.has(roomId)) {
-    const items = roomVaults.get(roomId).filter(item => item.expiresAt > now);
-    res.json({ items });
-  } else {
-    res.json({ items: [] });
-  }
+  const activeItems = vaultItems.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
+  res.json({ items: activeItems });
+});
+
+app.get('/api/room/:roomId/history', (req, res) => {
+  const now = Date.now();
+  const activeItems = vaultItems.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
+  res.json({ items: activeItems });
 });
 
 // Socket.io Real-Time Teleport Logic
@@ -192,23 +213,23 @@ io.on('connection', (socket) => {
   socket.on('register', ({ role, roomId, deviceInfo }) => {
     clientRole = role;
     clientInfo = deviceInfo || {};
-    currentRoom = roomId;
+    currentRoom = roomId || 'main';
 
-    socket.join(roomId);
+    socket.join(currentRoom);
 
-    if (!rooms.has(roomId)) {
-      rooms.set(roomId, {
+    if (!rooms.has(currentRoom)) {
+      rooms.set(currentRoom, {
         desktop: null,
         mobiles: new Set(),
         createdAt: Date.now()
       });
     }
 
-    const room = rooms.get(roomId);
+    const room = rooms.get(currentRoom);
 
     if (role === 'desktop') {
       room.desktop = socket.id;
-      socket.emit('registered', { role: 'desktop', roomId, publicUrl });
+      socket.emit('registered', { role: 'desktop', roomId: currentRoom, publicUrl });
       const mobileCount = room.mobiles.size;
       socket.emit('room-status', {
         connectedMobiles: mobileCount,
@@ -217,7 +238,7 @@ io.on('connection', (socket) => {
       });
     } else {
       room.mobiles.add(socket.id);
-      socket.emit('registered', { role: 'mobile', roomId });
+      socket.emit('registered', { role: 'mobile', roomId: currentRoom });
       
       if (room.desktop) {
         io.to(room.desktop).emit('peer-connected', {
@@ -232,19 +253,17 @@ io.on('connection', (socket) => {
         });
       }
 
-      // Send active 3-day room vault history to new peer
-      if (roomVaults.has(currentRoom)) {
-        const now = Date.now();
-        const activeItems = roomVaults.get(currentRoom).filter(item => item.expiresAt > now);
-        socket.emit('room-vault-history', activeItems);
-      }
-
       socket.emit('room-status', {
         hasDesktop: !!room.desktop,
         connectedMobiles: room.mobiles.size,
         publicUrl
       });
     }
+
+    // Unconditionally send all active 24-hour vault items to connecting device (desktop or mobile)
+    const now = Date.now();
+    const activeItems = vaultItems.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
+    socket.emit('room-vault-history', activeItems);
   });
 
   // WebRTC P2P Signaling
@@ -262,7 +281,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Instant Teleport Payload (Saved in 3-Day Vault)
+  // Instant Teleport Payload (Saved to Disk with 24-Hour Expiry)
   socket.on('teleport', (payload) => {
     if (!currentRoom) return;
 
@@ -275,13 +294,10 @@ io.on('connection', (socket) => {
       senderRole: clientRole
     };
 
-    // Store in 3-day persistent room vault
-    if (!roomVaults.has(currentRoom)) {
-      roomVaults.set(currentRoom, []);
-    }
-    const vault = roomVaults.get(currentRoom);
-    vault.push(packet);
-    if (vault.length > 50) vault.shift(); // Keep latest 50 items
+    // Store in global persistent vault and save to disk
+    vaultItems.unshift(packet);
+    if (vaultItems.length > 100) vaultItems = vaultItems.slice(0, 100);
+    saveVaultToDisk();
 
     socket.to(currentRoom).emit('teleport-receive', packet);
   });
