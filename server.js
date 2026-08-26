@@ -61,13 +61,21 @@ const rooms = new Map();
 const VAULT_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 Hours (1 Day) Auto-Expiry
 const VAULT_FILE = path.join(__dirname, 'vault_storage.json');
 
+let clearTime = 0;
+
 // Load vault items from disk
 function loadVaultFromDisk() {
   try {
     if (fs.existsSync(VAULT_FILE)) {
       const data = JSON.parse(fs.readFileSync(VAULT_FILE, 'utf-8'));
       const now = Date.now();
-      return Array.isArray(data) ? data.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now) : [];
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        clearTime = data.clearTime || 0;
+        const items = data.items || [];
+        return items.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
+      } else if (Array.isArray(data)) {
+        return data.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
+      }
     }
   } catch (e) {
     console.error('Error loading vault storage:', e);
@@ -82,7 +90,7 @@ function saveVaultToDisk() {
   try {
     const now = Date.now();
     vaultItems = vaultItems.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
-    fs.writeFileSync(VAULT_FILE, JSON.stringify(vaultItems), 'utf-8');
+    fs.writeFileSync(VAULT_FILE, JSON.stringify({ items: vaultItems, clearTime }), 'utf-8');
   } catch (e) {
     console.error('Error saving vault storage:', e);
   }
@@ -209,11 +217,13 @@ app.get('/api/room/:roomId/history', (req, res) => {
 // POST /api/clear — wipe entire vault from disk and broadcast clear to all clients
 app.post('/api/clear', (req, res) => {
   vaultItems = [];
-  try { fs.writeFileSync(VAULT_FILE, '[]', 'utf-8'); } catch (e) {}
+  clearTime = Date.now();
+  saveVaultToDisk();
   // Broadcast clear event to all connected sockets
-  io.emit('vault-cleared');
+  io.emit('vault-cleared', { clearTime });
   res.json({ ok: true });
 });
+
 
 
 io.on('connection', (socket) => {
@@ -274,7 +284,7 @@ io.on('connection', (socket) => {
     // Unconditionally send all active 24-hour vault items to connecting device (desktop or mobile)
     const now = Date.now();
     const activeItems = vaultItems.filter(item => (item.expiresAt || (item.timestamp + VAULT_RETENTION_MS)) > now);
-    socket.emit('room-vault-history', activeItems);
+    socket.emit('room-vault-history', { items: activeItems, clearTime });
   });
 
   // WebRTC P2P Signaling

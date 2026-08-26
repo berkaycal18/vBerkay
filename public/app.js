@@ -387,6 +387,7 @@ if (modeParam === 'mobile' || isMobileDevice) {
 
 // LocalStorage Persistence for 24-Hour History (Zero-Delay Instant Load on Refresh)
 const STORAGE_HISTORY_KEY = 'aetherdrop_local_history_v2';
+const STORAGE_CLEAR_TIME_KEY = 'aetherdrop_last_clear_time';
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 
 function saveLocalHistory() {
@@ -529,9 +530,54 @@ function initSocket() {
     handleIncomingPacket(packet);
   });
 
-  // Handle 3-Day Persistent Room History
-  state.socket.on('room-vault-history', (items) => {
-    if (!items || items.length === 0) return;
+  // Handle 24-Hour Persistent Room History with clearTime sync
+  state.socket.on('room-vault-history', (payload) => {
+    let items = [];
+    let serverClearTime = 0;
+
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      items = payload.items || [];
+      serverClearTime = payload.clearTime || 0;
+    } else if (Array.isArray(payload)) {
+      items = payload;
+    }
+
+    // Sync clear state if the server was cleared after our last active session
+    const localLastClear = parseInt(localStorage.getItem(STORAGE_CLEAR_TIME_KEY) || '0', 10);
+    if (serverClearTime > localLastClear) {
+      state.history = [];
+      try {
+        localStorage.removeItem(STORAGE_HISTORY_KEY);
+        localStorage.setItem(STORAGE_CLEAR_TIME_KEY, serverClearTime.toString());
+      } catch (e) {}
+
+      // Clear desktop UI
+      if (recentActivityFeed) {
+        recentActivityFeed.innerHTML = `
+          <div id="history-empty-state" class="text-center py-8 text-slate-500 text-xs flex flex-col items-center gap-2">
+            <i data-lucide="inbox" class="w-8 h-8 text-slate-600"></i>
+            <span>Geçmiş temizlendi.</span>
+          </div>
+        `;
+      }
+      // Clear mobile UI
+      if (mobileStreamList) {
+        mobileStreamList.innerHTML = `
+          <div id="mobile-empty-state" class="glass-panel rounded-2xl p-8 text-center flex flex-col items-center justify-center gap-3 my-auto">
+            <div class="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+              <i data-lucide="satellite" class="w-7 h-7"></i>
+            </div>
+            <div>
+              <h4 class="text-sm font-bold text-slate-200">Geçmiş Temizlendi</h4>
+            </div>
+          </div>
+        `;
+        if (mobileFeedCount) mobileFeedCount.textContent = '0 Öğe';
+      }
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    if (items.length === 0) return;
     items.forEach(item => {
       // Avoid duplicate display
       if (!state.history.some(h => h.id === item.id || (h.timestamp === item.timestamp && h.title === item.title))) {
@@ -541,9 +587,14 @@ function initSocket() {
   });
 
   // Handle remote vault-cleared broadcast (e.g. other device pressed Temizle)
-  state.socket.on('vault-cleared', () => {
+  state.socket.on('vault-cleared', (data) => {
+    const serverClearTime = (data && data.clearTime) ? data.clearTime : Date.now();
     state.history = [];
-    try { localStorage.removeItem(STORAGE_HISTORY_KEY); } catch (e) {}
+    try {
+      localStorage.removeItem(STORAGE_HISTORY_KEY);
+      localStorage.setItem(STORAGE_CLEAR_TIME_KEY, serverClearTime.toString());
+    } catch (e) {}
+
     if (recentActivityFeed) {
       recentActivityFeed.innerHTML = `
         <div id="history-empty-state" class="text-center py-8 text-slate-500 text-xs flex flex-col items-center gap-2">
@@ -596,9 +647,9 @@ function updateConnectionUI(connectedMobiles, hasDesktop) {
       connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>${connectedMobiles} Telefon Bağlı</span>`;
       if (connectedPhoneName) connectedPhoneName.textContent = `${connectedMobiles} Cihaz Aktif`;
     } else {
-      connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-amber-500/10 border border-amber-500/30 text-amber-300';
-      connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span><span>Telefon Bekleniyor...</span>`;
-      if (connectedPhoneName) connectedPhoneName.textContent = 'Bekleniyor...';
+      connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-indigo-500/10 border border-indigo-500/30 text-indigo-300';
+      connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-indigo-400"></span><span>Bulut Depolama Aktif</span>`;
+      if (connectedPhoneName) connectedPhoneName.textContent = 'Bulut Vault Aktif (Gönderebilirsiniz)';
     }
   } else {
     // Mobile view
@@ -606,8 +657,8 @@ function updateConnectionUI(connectedMobiles, hasDesktop) {
       connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-500/15 border border-emerald-500/40 text-emerald-300';
       connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>PC Bağlı</span>`;
     } else {
-      connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-amber-500/10 border border-amber-500/30 text-amber-300';
-      connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span><span>PC Bekleniyor...</span>`;
+      connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-indigo-500/10 border border-indigo-500/30 text-indigo-300';
+      connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span><span>Bulut Vault Modu</span>`;
     }
   }
 }
@@ -1392,4 +1443,26 @@ window.addEventListener('DOMContentLoaded', () => {
   initSocket();
   loadServerInfo();
   loadVaultHistory();
+
+  // Reconnect immediately when tab becomes visible (background to foreground switch)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      if (state.socket) {
+        if (state.socket.disconnected) {
+          state.socket.connect();
+        } else {
+          // Re-register to sync room status instantly
+          state.socket.emit('register', {
+            role: state.role,
+            roomId: state.roomId,
+            deviceInfo: {
+              userAgent: navigator.userAgent,
+              platform: navigator.platform,
+              screen: `${window.innerWidth}x${window.innerHeight}`
+            }
+          });
+        }
+      }
+    }
+  });
 });
