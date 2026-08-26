@@ -663,6 +663,9 @@ async function sendTeleportPayload(payload) {
     state.cosmic.triggerSendBurst();
   }
 
+  payload.timestamp = payload.timestamp || Date.now();
+  payload.expiresAt = payload.expiresAt || (Date.now() + (3 * 24 * 60 * 60 * 1000));
+
   // Send packet over socket
   state.socket.emit('teleport', payload);
 
