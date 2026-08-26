@@ -360,7 +360,7 @@ const state = {
   serverPort: 3456
 };
 
-// URL Parameters
+// URL Parameters & Permanent Persistent Room Management
 const urlParams = new URLSearchParams(window.location.search);
 const joinRoomParam = urlParams.get('join');
 const modeParam = urlParams.get('mode');
@@ -368,13 +368,35 @@ const modeParam = urlParams.get('mode');
 // Auto-detect mobile devices or join links
 const isMobileDevice = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth < 768;
 
-if (modeParam === 'mobile' || (joinRoomParam && isMobileDevice) || (joinRoomParam && modeParam !== 'desktop')) {
+const STORAGE_KEY_ROOM = 'aetherdrop_permanent_room_id';
+let storedRoom = null;
+try { storedRoom = localStorage.getItem(STORAGE_KEY_ROOM); } catch (e) {}
+
+if (joinRoomParam) {
+  state.roomId = joinRoomParam;
+  try { localStorage.setItem(STORAGE_KEY_ROOM, joinRoomParam); } catch (e) {}
+} else if (storedRoom) {
+  state.roomId = storedRoom;
+} else {
+  state.roomId = 'aether-' + Math.random().toString(36).substring(2, 8);
+  try { localStorage.setItem(STORAGE_KEY_ROOM, state.roomId); } catch (e) {}
+}
+
+if (modeParam === 'mobile' || isMobileDevice) {
   state.role = 'mobile';
-  state.roomId = joinRoomParam || 'default-room';
 } else {
   state.role = 'desktop';
-  state.roomId = joinRoomParam || 'aether-' + Math.random().toString(36).substring(2, 8);
 }
+
+// Preserve room in browser address bar permanently so refresh NEVER disconnects
+try {
+  if (window.history && window.history.replaceState) {
+    const currentUrl = new URL(window.location.href);
+    currentUrl.searchParams.set('join', state.roomId);
+    if (state.role === 'mobile') currentUrl.searchParams.set('mode', 'mobile');
+    window.history.replaceState({}, '', currentUrl.toString());
+  }
+} catch (e) {}
 
 // DOM Elements
 const desktopView = document.getElementById('desktop-view');
@@ -664,7 +686,7 @@ async function sendTeleportPayload(payload) {
   }
 
   payload.timestamp = payload.timestamp || Date.now();
-  payload.expiresAt = payload.expiresAt || (Date.now() + (3 * 24 * 60 * 60 * 1000));
+  payload.expiresAt = payload.expiresAt || (Date.now() + (24 * 60 * 60 * 1000));
 
   // Send packet over socket
   state.socket.emit('teleport', payload);
@@ -714,7 +736,8 @@ async function processAndSendFiles(fileList) {
         size: file.size,
         mime: file.type,
         data: dataUrl,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        expiresAt: Date.now() + (24 * 60 * 60 * 1000)
       };
 
       await sendTeleportPayload(payload);
@@ -736,7 +759,8 @@ function processAndSendText(rawText) {
     type: isUrl ? 'url' : 'text',
     title: isUrl ? 'Web Bağlantısı' : 'Metin / Not',
     content: text,
-    timestamp: Date.now()
+    timestamp: Date.now(),
+    expiresAt: Date.now() + (24 * 60 * 60 * 1000)
   };
 
   sendTeleportPayload(payload);
@@ -864,11 +888,12 @@ function createContentCard(item, isSentByMe) {
     `;
   }
 
-  const expiresAt = item.expiresAt || (item.timestamp ? item.timestamp + (3 * 24 * 60 * 60 * 1000) : Date.now() + (3 * 24 * 60 * 60 * 1000));
-  const remainingHours = Math.max(0, Math.round((expiresAt - Date.now()) / (1000 * 60 * 60)));
-  const daysLeft = Math.floor(remainingHours / 24);
-  const hoursLeft = remainingHours % 24;
-  const expiryText = daysLeft > 0 ? `${daysLeft} gün ${hoursLeft}s kaldı` : `${hoursLeft}s kaldı`;
+  const RETENTION_MS = 24 * 60 * 60 * 1000;
+  const expiresAt = item.expiresAt || (item.timestamp ? item.timestamp + RETENTION_MS : Date.now() + RETENTION_MS);
+  const remainingMs = Math.max(0, expiresAt - Date.now());
+  const remainingHours = Math.floor(remainingMs / (1000 * 60 * 60));
+  const remainingMins = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
+  const expiryText = remainingHours > 0 ? `${remainingHours} sa ${remainingMins} dk` : `${remainingMins} dk`;
 
   card.innerHTML = `
     <div class="flex items-center justify-between border-b border-slate-800/80 pb-2.5">
@@ -878,10 +903,10 @@ function createContentCard(item, isSentByMe) {
         </div>
         <div>
           <h4 class="text-xs sm:text-sm font-bold text-slate-200 truncate max-w-[200px] sm:max-w-xs">${item.title || item.name || 'Işınlanan Öğe'}</h4>
-          <div class="flex items-center gap-2 mt-0.5">
+          <div class="flex flex-wrap items-center gap-2 mt-1">
             <span class="text-[10px] text-slate-500 font-mono">${timeStr} • ${isSentByMe ? 'Gönderildi' : 'Alındı'}</span>
-            <span class="text-[10px] text-amber-300/90 bg-amber-500/10 px-1.5 py-0.5 rounded-md border border-amber-500/30 flex items-center gap-1 font-mono">
-              <i data-lucide="timer" class="w-3 h-3 text-amber-400"></i> ${expiryText}
+            <span class="inline-flex items-center gap-1 text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-md border border-amber-500/40">
+              ⏱️ ${expiryText} kaldı (24s Otomatik Silinir)
             </span>
           </div>
         </div>

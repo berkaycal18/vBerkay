@@ -53,10 +53,10 @@ function getLocalIpAddresses() {
   return addresses.length > 0 ? addresses : ['127.0.0.1'];
 }
 
-// In-memory room state and 3-Day Persistent Vault
+// In-memory room state and 24-Hour (1 Day) Persistent Vault
 const rooms = new Map();
 const roomVaults = new Map(); // roomId -> Array of { packet, expiresAt }
-const VAULT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000; // 3 Days (72 Hours)
+const VAULT_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 Hours (1 Day) Auto-Expiry
 
 // Clean expired vault items periodically
 function cleanExpiredVaultItems() {
