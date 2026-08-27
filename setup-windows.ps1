@@ -1,25 +1,33 @@
-﻿# MOVADROP Windows Server 1-Click Auto-Installer Script
+# MOVADROP Windows Server 1-Click Auto-Installer Script
 Write-Host "=========================================" -ForegroundColor Cyan
 Write-Host " 🚀 MOVADROP Windows 7/24 Otomatik Kurulum" -ForegroundColor Cyan
 Write-Host "=========================================" -ForegroundColor Cyan
 
 # 1. Open Firewall Port 3000
-Write-Host "`n[1/3] Guvenlik Duvarinda Port 3000 aciliyor..." -ForegroundColor Yellow
+Write-Host "`n[1/3] Guvenlik Duvarinda Port 3000 denemesi..." -ForegroundColor Yellow
 try {
-    New-NetFirewallRule -DisplayName "MOVADROP Port 3000" -Direction Inbound -LocalPort 3000 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue
+    netsh advfirewall firewall add rule name="MOVADROP Port 3000" dir=in action=allow protocol=TCP localport=3000 | Out-Null
     Write-Host "✅ Port 3000 basariyla acildi." -ForegroundColor Green
 } catch {
-    Write-Host "⚠️ Port 3000 uyarisi (zaten acik olabilir)." -ForegroundColor Gray
+    Write-Host "⚠️ Port 3000 uyarisi (zaten acik veya izin gerektiriyor)." -ForegroundColor Gray
 }
 
 # 2. Clone or Update repo
 Write-Host "`n[2/3] MOVADROP projesi C:\movadrop dizinine indiriliyor..." -ForegroundColor Yellow
 if (Test-Path "C:\movadrop") {
     Set-Location "C:\movadrop"
-    git pull origin main
+    try { git pull origin main } catch {}
 } else {
-    git clone https://github.com/berkaycal18/vBerkay.git C:\movadrop
-    Set-Location "C:\movadrop"
+    try {
+        git clone https://github.com/berkaycal18/vBerkay.git C:\movadrop
+        Set-Location "C:\movadrop"
+    } catch {
+        Write-Host "Git indirilemedi, zip olarak indiriliyor..." -ForegroundColor Yellow
+        Invoke-WebRequest -Uri "https://github.com/berkaycal18/vBerkay/archive/refs/heads/main.zip" -OutFile "C:\movadrop.zip"
+        Expand-Archive -Path "C:\movadrop.zip" -DestinationPath "C:\" -Force
+        Rename-Item -Path "C:\vBerkay-main" -NewName "movadrop" -Force
+        Set-Location "C:\movadrop"
+    }
 }
 
 # 3. Install & Start PM2
