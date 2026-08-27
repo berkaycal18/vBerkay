@@ -779,7 +779,7 @@ async function sendTeleportPayload(payload) {
 
     // Save doc to Firestore
     const roomMessagesRef = collection(db, 'rooms', state.roomId, 'messages');
-    await addDoc(roomMessagesRef, payload);
+    await setDoc(doc(roomMessagesRef, payload.id), payload);
 
     addActivityItem(payload, true);
     showToast(`${payload.title || 'İçerik'} Gönderildi! 🛸`, 'success');
@@ -789,10 +789,160 @@ async function sendTeleportPayload(payload) {
   }
 }
 
+// Chunked File & Video Teleporter (Supports up to 50MB Videos/Files with Zero Server Cost)
+async function sendChunkedPayload(file, type) {
+  const CHUNK_SIZE = 400 * 1024; // 400 KB per chunk (Base64)
+  const reader = new FileReader();
+
+  showTransferProgress(file.name, file.size);
+
+  reader.onprogress = (e) => {
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 25);
+      updateTransferProgress(pct, e.loaded, e.total);
+    }
+  };
+
+  reader.onload = async (e) => {
+    try {
+      const fullDataUrl = e.target.result;
+      const totalLength = fullDataUrl.length;
+      const totalChunks = Math.ceil(totalLength / CHUNK_SIZE);
+      const msgId = 'tp_' + Math.random().toString(36).substr(2, 9);
+
+      updateTransferProgress(30, 0, totalChunks);
+
+      // 1. Create parent message document in Firestore
+      const parentPayload = {
+        id: msgId,
+        type: type,
+        title: file.name,
+        name: file.name,
+        size: file.size,
+        mime: file.type || 'application/octet-stream',
+        isChunked: true,
+        totalChunks: totalChunks,
+        timestamp: Date.now(),
+        expiresAt: Date.now() + RETENTION_MS,
+        senderId: state.deviceId,
+        senderRole: state.role
+      };
+
+      state.processedIds.add(msgId);
+
+      const parentDocRef = doc(db, 'rooms', state.roomId, 'messages', msgId);
+      await setDoc(parentDocRef, parentPayload);
+
+      // Add to sender's own UI immediately with local fullDataUrl
+      const localPayload = { ...parentPayload, data: fullDataUrl };
+      addActivityItem(localPayload, true);
+
+      state.sound.playTeleport();
+      if (state.cosmic) state.cosmic.triggerSendBurst();
+
+      // 2. Upload chunks in parallel batches of 4
+      const BATCH_CONCURRENCY = 4;
+      for (let i = 0; i < totalChunks; i += BATCH_CONCURRENCY) {
+        const batchPromises = [];
+        for (let j = i; j < Math.min(i + BATCH_CONCURRENCY, totalChunks); j++) {
+          const chunkString = fullDataUrl.substring(j * CHUNK_SIZE, (j + 1) * CHUNK_SIZE);
+          const chunkDocRef = doc(db, 'rooms', state.roomId, 'messages', msgId, 'chunks', 'c_' + j.toString().padStart(4, '0'));
+          batchPromises.push(setDoc(chunkDocRef, {
+            index: j,
+            data: chunkString
+          }));
+        }
+        await Promise.all(batchPromises);
+
+        const progressPct = 30 + Math.round(((i + BATCH_CONCURRENCY) / totalChunks) * 70);
+        updateTransferProgress(Math.min(100, progressPct), i + BATCH_CONCURRENCY, totalChunks);
+      }
+
+      hideTransferProgress();
+      showToast(`🎬 ${file.name} Başarıyla Işınlandı!`, 'success');
+    } catch (err) {
+      console.error('Chunk upload error:', err);
+      hideTransferProgress();
+      showToast('Video yükleme hatası: ' + err.message, 'error');
+    }
+  };
+
+  reader.readAsDataURL(file);
+}
+
+// Assemble Chunked Item on Receiver
+async function assembleChunkedItem(item) {
+  try {
+    const chunksRef = collection(db, 'rooms', state.roomId, 'messages', item.id, 'chunks');
+    const q = query(chunksRef, orderBy('index', 'asc'));
+    
+    // Poll or listen until all chunks arrive
+    const snapshot = await getDocs(q);
+    const chunks = [];
+    snapshot.forEach(docSnap => chunks.push(docSnap.data()));
+    
+    if (chunks.length < item.totalChunks) {
+      // Retry in 1.5 seconds if some chunks are still uploading
+      setTimeout(() => assembleChunkedItem(item), 1500);
+      return;
+    }
+
+    chunks.sort((a, b) => a.index - b.index);
+    const fullDataUrl = chunks.map(c => c.data).join('');
+    item.data = fullDataUrl;
+
+    updateCardWithAssembledData(item);
+  } catch (err) {
+    console.error('Error assembling chunks:', err);
+  }
+}
+
+// Update Card When Chunks Finished Downloading
+function updateCardWithAssembledData(item) {
+  const containers = document.querySelectorAll(`[data-chunk-id="${item.id}"]`);
+  containers.forEach(container => {
+    if (item.type === 'video') {
+      container.innerHTML = `
+        <div class="rounded-xl overflow-hidden bg-slate-950 border border-slate-800">
+          <video controls playsinline class="w-full max-h-64 rounded-xl" src="${item.data}"></video>
+        </div>
+        <div class="flex items-center justify-between mt-1">
+          <span class="text-xs text-slate-400">${formatFileSize(item.size || 0)}</span>
+          <a href="${item.data}" download="${item.name || 'video.mp4'}" class="px-3.5 py-1.5 rounded-xl bg-indigo-600/80 hover:bg-indigo-600 text-white text-xs font-semibold transition flex items-center gap-1.5 shadow">
+            <i data-lucide="download" class="w-3.5 h-3.5"></i>
+            <span>İndir</span>
+          </a>
+        </div>
+      `;
+    } else {
+      container.innerHTML = `
+        <div class="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between">
+          <div class="flex items-center gap-3 overflow-hidden">
+            <div class="w-10 h-10 rounded-lg bg-indigo-600/20 text-indigo-400 flex items-center justify-center flex-shrink-0">
+              <i data-lucide="paperclip" class="w-5 h-5"></i>
+            </div>
+            <div class="overflow-hidden">
+              <h5 class="text-xs sm:text-sm font-semibold text-white truncate">${item.name || item.title || 'Dosya'}</h5>
+              <span class="text-[11px] text-slate-400">${formatFileSize(item.size || 0)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="flex items-center justify-end">
+          <a href="${item.data}" download="${item.name || 'teleport_file'}" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition flex items-center gap-2 shadow-lg">
+            <i data-lucide="download" class="w-4 h-4"></i>
+            <span>Dosyayı İndir</span>
+          </a>
+        </div>
+      `;
+    }
+  });
+
+  if (window.lucide) window.lucide.createIcons();
+}
+
 // Smart Client-Side Image Optimizer (Scales & Compresses Phone Photos to <500KB in 50ms)
 function optimizeImageFile(file) {
   return new Promise((resolve) => {
-    // If SVG or tiny icon, don't resize via canvas
     if (file.type === 'image/svg+xml' || file.size < 80000) {
       const reader = new FileReader();
       reader.onload = (e) => resolve({ dataUrl: e.target.result, size: file.size });
@@ -824,9 +974,7 @@ function optimizeImageFile(file) {
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
 
-        // Quality 0.8 JPEG
         let dataUrl = canvas.toDataURL('image/jpeg', 0.82);
-        // If still > 700KB, drop quality slightly to 0.65
         if (dataUrl.length > 900000) {
           dataUrl = canvas.toDataURL('image/jpeg', 0.65);
         }
@@ -835,7 +983,6 @@ function optimizeImageFile(file) {
         resolve({ dataUrl, size: estBytes });
       };
       img.onerror = () => {
-        // Fallback to raw dataUrl
         resolve({ dataUrl: e.target.result, size: file.size });
       };
       img.src = e.target.result;
@@ -844,14 +991,18 @@ function optimizeImageFile(file) {
   });
 }
 
-// Handle File Processing & Sending (PC & Mobile Safe)
+// Handle File Processing & Sending (PC & Mobile Safe - Supports up to 50MB Videos & Files)
 async function processAndSendFiles(fileList) {
   if (!fileList || fileList.length === 0) return;
 
   const files = Array.from(fileList);
+  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 Megabytes!
 
   for (const file of files) {
-    showTransferProgress(file.name, file.size);
+    if (file.size > MAX_FILE_SIZE) {
+      showToast(`"${file.name}" çok büyük (${formatFileSize(file.size)}). Maksimum dosya boyutu 50 MB'dir.`, 'error');
+      continue;
+    }
 
     const isImage = file.type.startsWith('image/');
     const isVideo = file.type.startsWith('video/');
@@ -865,7 +1016,8 @@ async function processAndSendFiles(fileList) {
     else if (file.type === 'application/pdf') type = 'pdf';
 
     try {
-      if (isImage) {
+      if (isImage && file.size < 15 * 1024 * 1024) {
+        showTransferProgress(file.name, file.size);
         updateTransferProgress(50, file.size / 2, file.size);
         const { dataUrl, size } = await optimizeImageFile(file);
         updateTransferProgress(100, size, size);
@@ -883,14 +1035,12 @@ async function processAndSendFiles(fileList) {
 
         await sendTeleportPayload(payload);
         hideTransferProgress();
+      } else if (file.size > 700 * 1024) {
+        // Large Video or File (>700KB) -> Use Chunked Teleport
+        await sendChunkedPayload(file, type);
       } else {
-        // Non-image file: check size
-        if (file.size > 800 * 1024) {
-          hideTransferProgress();
-          showToast(`"${file.name}" çok büyük (${formatFileSize(file.size)}). Ücretsiz modda maksimum dosya boyutu 800 KB'dir.`, 'error');
-          continue;
-        }
-
+        // Small file (<700KB) -> Direct single document
+        showTransferProgress(file.name, file.size);
         const reader = new FileReader();
         reader.onprogress = (e) => {
           if (e.lengthComputable) {
@@ -981,7 +1131,26 @@ function createContentCard(item, isSentByMe) {
   let iconHtml = '<i data-lucide="file" class="w-5 h-5 text-indigo-400"></i>';
   let bodyHtml = '';
 
-  if (item.type === 'image') {
+  if (item.isChunked && !item.data) {
+    iconHtml = item.type === 'video' ? '<i data-lucide="film" class="w-5 h-5 text-indigo-400"></i>' : '<i data-lucide="package" class="w-5 h-5 text-purple-400"></i>';
+    bodyHtml = `
+      <div data-chunk-id="${item.id}" class="p-4 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col gap-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2 text-xs text-indigo-300 font-semibold">
+            <i data-lucide="loader-2" class="w-4 h-4 animate-spin text-indigo-400"></i>
+            <span>${item.type === 'video' ? '🎬 Video' : '📁 Dosya'} Işınlanıyor (${formatFileSize(item.size || 0)})...</span>
+          </div>
+          <span class="text-xs font-mono text-indigo-400 font-bold">${item.totalChunks} Parça</span>
+        </div>
+        <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+          <div class="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full animate-pulse" style="width: 100%"></div>
+        </div>
+      </div>
+    `;
+
+    // Trigger chunk assembly
+    setTimeout(() => assembleChunkedItem(item), 100);
+  } else if (item.type === 'image') {
     iconHtml = '<i data-lucide="image" class="w-5 h-5 text-pink-400"></i>';
     bodyHtml = `
       <div class="relative rounded-xl overflow-hidden bg-slate-900 border border-slate-800 cursor-pointer group max-h-64 flex items-center justify-center" onclick="openLightbox('${item.data}')">
@@ -1003,15 +1172,17 @@ function createContentCard(item, isSentByMe) {
   } else if (item.type === 'video') {
     iconHtml = '<i data-lucide="film" class="w-5 h-5 text-indigo-400"></i>';
     bodyHtml = `
-      <div class="rounded-xl overflow-hidden bg-slate-950 border border-slate-800">
-        <video controls class="w-full max-h-64 rounded-xl" src="${item.data}"></video>
-      </div>
-      <div class="flex items-center justify-between mt-1">
-        <span class="text-xs text-slate-400">${formatFileSize(item.size || 0)}</span>
-        <a href="${item.data}" download="${item.name || 'video.mp4'}" class="px-3.5 py-1.5 rounded-xl bg-indigo-600/80 hover:bg-indigo-600 text-white text-xs font-semibold transition flex items-center gap-1.5">
-          <i data-lucide="download" class="w-3.5 h-3.5"></i>
-          <span>İndir</span>
-        </a>
+      <div data-chunk-id="${item.id}">
+        <div class="rounded-xl overflow-hidden bg-slate-950 border border-slate-800">
+          <video controls playsinline class="w-full max-h-64 rounded-xl" src="${item.data}"></video>
+        </div>
+        <div class="flex items-center justify-between mt-1">
+          <span class="text-xs text-slate-400">${formatFileSize(item.size || 0)}</span>
+          <a href="${item.data}" download="${item.name || 'video.mp4'}" class="px-3.5 py-1.5 rounded-xl bg-indigo-600/80 hover:bg-indigo-600 text-white text-xs font-semibold transition flex items-center gap-1.5 shadow">
+            <i data-lucide="download" class="w-3.5 h-3.5"></i>
+            <span>İndir</span>
+          </a>
+        </div>
       </div>
     `;
   } else if (item.type === 'url') {
@@ -1052,22 +1223,24 @@ function createContentCard(item, isSentByMe) {
     // Generic File / APK / PDF
     iconHtml = '<i data-lucide="file-check" class="w-5 h-5 text-purple-400"></i>';
     bodyHtml = `
-      <div class="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between">
-        <div class="flex items-center gap-3 overflow-hidden">
-          <div class="w-10 h-10 rounded-lg bg-indigo-600/20 text-indigo-400 flex items-center justify-center flex-shrink-0">
-            <i data-lucide="paperclip" class="w-5 h-5"></i>
-          </div>
-          <div class="overflow-hidden">
-            <h5 class="text-xs sm:text-sm font-semibold text-white truncate">${item.name || item.title || 'Dosya'}</h5>
-            <span class="text-[11px] text-slate-400">${formatFileSize(item.size || 0)}</span>
+      <div data-chunk-id="${item.id}">
+        <div class="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between">
+          <div class="flex items-center gap-3 overflow-hidden">
+            <div class="w-10 h-10 rounded-lg bg-indigo-600/20 text-indigo-400 flex items-center justify-center flex-shrink-0">
+              <i data-lucide="paperclip" class="w-5 h-5"></i>
+            </div>
+            <div class="overflow-hidden">
+              <h5 class="text-xs sm:text-sm font-semibold text-white truncate">${item.name || item.title || 'Dosya'}</h5>
+              <span class="text-[11px] text-slate-400">${formatFileSize(item.size || 0)}</span>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="flex items-center justify-end">
-        <a href="${item.data}" download="${item.name || 'teleport_file'}" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition flex items-center gap-2 shadow-lg">
-          <i data-lucide="download" class="w-4 h-4"></i>
-          <span>Dosyayı İndir</span>
-        </a>
+        <div class="flex items-center justify-end mt-1">
+          <a href="${item.data}" download="${item.name || 'teleport_file'}" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition flex items-center gap-2 shadow-lg">
+            <i data-lucide="download" class="w-4 h-4"></i>
+            <span>Dosyayı İndir</span>
+          </a>
+        </div>
       </div>
     `;
   }
