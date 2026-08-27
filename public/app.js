@@ -613,20 +613,6 @@ function startPresenceHeartbeat() {
   });
 }
 
-  // Init sound on socket connect so first interaction plays audio
-  state.sound.init();
-}
-
-
-function startPingHeartbeat() {
-  if (state.pingInterval) clearInterval(state.pingInterval);
-  state.pingInterval = setInterval(() => {
-    if (state.socket && state.socket.connected) {
-      state.socket.emit('ping-peer', { timestamp: Date.now() });
-    }
-  }, 3000);
-}
-
 function updateConnectionUI(connectedMobiles, hasDesktop) {
   if (state.role === 'desktop') {
     if (connectedMobiles > 0) {
@@ -647,24 +633,6 @@ function updateConnectionUI(connectedMobiles, hasDesktop) {
       connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-indigo-500/10 border border-indigo-500/30 text-indigo-300';
       connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span><span>Bulut Vault Modu</span>`;
     }
-  }
-}
-
-// Fetch Server Info & Generate QR for Desktop
-async function loadServerInfo() {
-  if (state.role !== 'desktop') return;
-  
-  try {
-    const res = await fetch('/api/info');
-    const data = await res.json();
-    
-    state.localUrl = data.localUrl;
-    state.publicUrl = data.publicUrl;
-    state.serverPort = data.port;
-
-    updateNetworkDisplay();
-  } catch (err) {
-    console.error('Failed to load server info:', err);
   }
 }
 
@@ -699,15 +667,9 @@ async function updateNetworkDisplay() {
     }
   }
 
-  // Fetch & Render Dynamic QR Code
-  try {
-    const qrRes = await fetch(`/api/qr?url=${encodeURIComponent(mobileJoinUrl)}`);
-    const qrData = await qrRes.json();
-    if (pairingQrImg && qrData.qr) {
-      pairingQrImg.src = qrData.qr;
-    }
-  } catch (e) {
-    console.error('QR fetch error:', e);
+  // Render Dynamic High-Res QR Code (Instant Client-Side Generation)
+  if (pairingQrImg) {
+    pairingQrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(mobileJoinUrl)}&color=0f172a&bgcolor=ffffff&qzone=2`;
   }
 }
 
@@ -1385,25 +1347,9 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-async function loadVaultHistory() {
-  try {
-    const res = await fetch(`/api/room/${state.roomId}/history`);
-    const data = await res.json();
-    if (data.items && Array.isArray(data.items)) {
-      const reversed = [...data.items].reverse();
-      reversed.forEach(item => {
-        if (!state.history.some(h => h.id === item.id)) {
-          addActivityItem(item, item.senderRole === state.role);
-        }
-      });
-    }
-  } catch (e) {
-    console.error('Error loading vault history:', e);
-  }
-}
 
 // Start Application
-window.addEventListener('DOMContentLoaded', () => {
+function startApp() {
   if (window.lucide) window.lucide.createIcons();
   
   loadLocalHistory();
@@ -1432,4 +1378,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
   initFirebaseSync();
   updateNetworkDisplay();
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startApp);
+} else {
+  startApp();
+}
