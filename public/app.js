@@ -1,5 +1,5 @@
 /**
- * AetherDrop Client Application — Powered by Google Firebase (Serverless & Instant Sync)
+ * MOVADROP Client Application — Powered by Google Firebase (Serverless & Instant Sync)
  */
 
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.4.0/firebase-app.js';
@@ -325,7 +325,7 @@ class NotificationEngine {
       this.permission = perm;
       if (perm === 'granted') {
         showToast('🔔 Bildirimler Başarıyla Açıldı!', 'success');
-        this.send('AetherDrop Hazır!', 'Yeni bir dosya veya yazı geldiğinde anında bildirim alacaksınız.');
+        this.send('MOVADROP Hazır!', 'Yeni bir dosya veya yazı geldiğinde anında bildirim alacaksınız.');
         return true;
       } else {
         showToast('Bildirim izni verilmedi.', 'info');

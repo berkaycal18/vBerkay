@@ -1,5 +1,5 @@
 {
-  "name": "aetherdrop",
+  "name": "movadrop",
   "version": "1.0.0",
   "description": "Magical PC-to-Phone Drag & Drop Instant Teleport Platform",
   "main": "electron-main.cjs",
@@ -10,8 +10,8 @@
     "build": "electron-builder --win portable"
   },
   "build": {
-    "appId": "com.berkay.aetherdrop",
-    "productName": "AetherDrop",
+    "appId": "com.berkay.movadrop",
+    "productName": "MOVADROP",
     "directories": {
       "output": "dist"
     },
