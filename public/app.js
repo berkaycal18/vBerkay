@@ -1,7 +1,34 @@
 /**
- * AetherDrop Client Application
- * Handles Drag & Drop, Socket/WebRTC signaling, Smart Content Parsing, Sound FX & Haptics
+ * AetherDrop Client Application — Powered by Google Firebase (Serverless & Instant Sync)
  */
+
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.4.0/firebase-app.js';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  addDoc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  getDocs, 
+  deleteDoc,
+  writeBatch
+} from 'https://www.gstatic.com/firebasejs/11.4.0/firebase-firestore.js';
+
+// Firebase Configuration (berkay-a760f)
+const firebaseConfig = {
+  apiKey: "AIzaSyCaLhZCgJYvwQaOLuSdpX7a-kVrkOA-5mc",
+  authDomain: "berkay-a760f.firebaseapp.com",
+  projectId: "berkay-a760f",
+  storageBucket: "berkay-a760f.firebasestorage.app",
+  messagingSenderId: "226527058460",
+  appId: "1:226527058460:web:07610f2424160b1bfbddd9"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
 
 // Sound Synthesizer via Web Audio API
 class SoundFx {
@@ -351,9 +378,12 @@ class NotificationEngine {
   }
 }
 
+// Unique Device ID
+const deviceId = 'dev_' + Math.random().toString(36).substr(2, 9);
+
 // Global App State
 const state = {
-  socket: null,
+  deviceId: deviceId,
   role: 'desktop', // 'desktop' or 'mobile'
   roomId: null,
   sound: new SoundFx(),
@@ -361,11 +391,9 @@ const state = {
   notifications: new NotificationEngine(),
   activePeers: 0,
   history: [],
-  pingInterval: null,
-  networkMode: 'local', // 'local' or 'global'
-  localUrl: '',
-  publicUrl: '',
-  serverPort: 3456
+  networkMode: 'global',
+  publicUrl: window.location.origin,
+  processedIds: new Set()
 };
 
 // URL Parameters & Unified Shared Room
@@ -511,145 +539,79 @@ function updateUIMode() {
 
 updateUIMode();
 
-// Initialize Socket.IO Connection
-function initSocket() {
-  state.socket = io();
+// Initialize Firebase Realtime Listeners
+function initFirebaseSync() {
+  const roomMessagesRef = collection(db, 'rooms', state.roomId, 'messages');
+  const q = query(roomMessagesRef, orderBy('timestamp', 'asc'));
 
-  state.socket.on('connect', () => {
-    console.log('🛸 Connected to AetherDrop Server. Socket ID:', state.socket.id);
-    
-    // Register device
-    state.socket.emit('register', {
-      role: state.role,
-      roomId: state.roomId,
-      deviceInfo: {
-        userAgent: navigator.userAgent,
-        platform: navigator.platform,
-        screen: `${window.innerWidth}x${window.innerHeight}`
+  // Listen to live message events
+  onSnapshot(q, (snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      const data = change.doc.data();
+      const docId = change.doc.id;
+      data.id = data.id || docId;
+
+      if (change.type === 'added') {
+        const isExpired = (data.expiresAt || (data.timestamp + RETENTION_MS)) <= Date.now();
+        if (isExpired) return;
+
+        const isAlreadyKnown = state.processedIds.has(data.id) || state.history.some(h => h.id === data.id);
+        if (!isAlreadyKnown) {
+          state.processedIds.add(data.id);
+          const isSentByMe = data.senderId === state.deviceId;
+          
+          if (!isSentByMe) {
+            handleIncomingPacket(data);
+          } else {
+            addActivityItem(data, true, false);
+          }
+        }
+      }
+    });
+  }, (error) => {
+    console.error('Firestore snapshot error:', error);
+  });
+
+  // Start Presence Heartbeat
+  startPresenceHeartbeat();
+}
+
+// Presence Heartbeat via Firestore
+function startPresenceHeartbeat() {
+  const presenceDocRef = doc(db, 'rooms', state.roomId, 'presence', state.deviceId);
+  
+  const sendHeartbeat = async () => {
+    try {
+      await setDoc(presenceDocRef, {
+        role: state.role,
+        updatedAt: Date.now()
+      }, { merge: true });
+    } catch (e) {}
+  };
+
+  sendHeartbeat();
+  setInterval(sendHeartbeat, 10000);
+
+  // Listen to peer presence
+  const presenceColRef = collection(db, 'rooms', state.roomId, 'presence');
+  onSnapshot(presenceColRef, (snapshot) => {
+    const now = Date.now();
+    let mobileCount = 0;
+    let hasDesktop = false;
+
+    snapshot.forEach(docSnap => {
+      const data = docSnap.data();
+      if (data && data.updatedAt && (now - data.updatedAt < 25000)) {
+        if (data.role === 'mobile') mobileCount++;
+        if (data.role === 'desktop') hasDesktop = true;
       }
     });
 
-    startPingHeartbeat();
+    state.activePeers = mobileCount;
+    updateConnectionUI(mobileCount, hasDesktop);
+    if (pingText) pingText.textContent = 'Firebase Canlı';
   });
-
-  state.socket.on('room-status', ({ connectedMobiles, hasDesktop }) => {
-    state.activePeers = connectedMobiles;
-    updateConnectionUI(connectedMobiles, hasDesktop);
-  });
-
-  state.socket.on('peer-connected', ({ id, role, deviceInfo }) => {
-    showToast(`📱 Yeni ${role === 'mobile' ? 'Telefon' : 'Cihaz'} Bağlandı!`, 'success');
-    state.sound.playArrival();
-    if (navigator.vibrate) navigator.vibrate(100);
-  });
-
-  state.socket.on('peer-disconnected', () => {
-    showToast('Bir cihazın bağlantısı kesildi.', 'info');
-  });
-
-  // Handle Incoming Teleported Data
-  state.socket.on('teleport-receive', (packet) => {
-    handleIncomingPacket(packet);
-  });
-
-  // Handle 24-Hour Persistent Room History with clearTime sync
-  state.socket.on('room-vault-history', (payload) => {
-    let items = [];
-    let serverClearTime = 0;
-
-    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-      items = payload.items || [];
-      serverClearTime = payload.clearTime || 0;
-    } else if (Array.isArray(payload)) {
-      items = payload;
-    }
-
-    // Sync clear state if the server was cleared after our last active session
-    let localLastClear = 0;
-    try {
-      localLastClear = parseInt(localStorage.getItem(STORAGE_CLEAR_TIME_KEY) || '0', 10);
-    } catch (e) {}
-    if (serverClearTime > localLastClear) {
-      state.history = [];
-      try {
-        localStorage.removeItem(STORAGE_HISTORY_KEY);
-        localStorage.setItem(STORAGE_CLEAR_TIME_KEY, serverClearTime.toString());
-      } catch (e) {}
-
-      // Clear desktop UI
-      if (recentActivityFeed) {
-        recentActivityFeed.innerHTML = `
-          <div id="history-empty-state" class="text-center py-8 text-slate-500 text-xs flex flex-col items-center gap-2">
-            <i data-lucide="inbox" class="w-8 h-8 text-slate-600"></i>
-            <span>Geçmiş temizlendi.</span>
-          </div>
-        `;
-      }
-      // Clear mobile UI
-      if (mobileStreamList) {
-        mobileStreamList.innerHTML = `
-          <div id="mobile-empty-state" class="glass-panel rounded-2xl p-8 text-center flex flex-col items-center justify-center gap-3 my-auto">
-            <div class="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-              <i data-lucide="satellite" class="w-7 h-7"></i>
-            </div>
-            <div>
-              <h4 class="text-sm font-bold text-slate-200">Geçmiş Temizlendi</h4>
-            </div>
-          </div>
-        `;
-        if (mobileFeedCount) mobileFeedCount.textContent = '0 Öğe';
-      }
-      if (window.lucide) window.lucide.createIcons();
-    }
-
-    if (items.length === 0) return;
-    items.forEach(item => {
-      // Avoid duplicate display
-      if (!state.history.some(h => h.id === item.id || (h.timestamp === item.timestamp && h.title === item.title))) {
-        addActivityItem(item, item.senderRole === state.role);
-      }
-    });
-  });
-
-  // Handle remote vault-cleared broadcast (e.g. other device pressed Temizle)
-  state.socket.on('vault-cleared', (data) => {
-    const serverClearTime = (data && data.clearTime) ? data.clearTime : Date.now();
-    state.history = [];
-    try {
-      localStorage.removeItem(STORAGE_HISTORY_KEY);
-      localStorage.setItem(STORAGE_CLEAR_TIME_KEY, serverClearTime.toString());
-    } catch (e) {}
-
-    if (recentActivityFeed) {
-      recentActivityFeed.innerHTML = `
-        <div id="history-empty-state" class="text-center py-8 text-slate-500 text-xs flex flex-col items-center gap-2">
-          <i data-lucide="inbox" class="w-8 h-8 text-slate-600"></i>
-          <span>Geçmiş temizlendi.</span>
-        </div>
-      `;
-    }
-    if (mobileStreamList) {
-      mobileStreamList.innerHTML = `
-        <div id="mobile-empty-state" class="glass-panel rounded-2xl p-8 text-center flex flex-col items-center justify-center gap-3 my-auto">
-          <div class="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-            <i data-lucide="satellite" class="w-7 h-7"></i>
-          </div>
-          <div>
-            <h4 class="text-sm font-bold text-slate-200">Geçmiş Temizlendi</h4>
-          </div>
-        </div>
-      `;
-      if (mobileFeedCount) mobileFeedCount.textContent = '0 Öğe';
-    }
-    if (window.lucide) window.lucide.createIcons();
-    showToast('🗑️ Geçmiş temizlendi!', 'info');
-  });
-
-  // Pong for latency
-  state.socket.on('pong-peer', ({ timestamp }) => {
-    const rtt = Date.now() - timestamp;
-    if (pingText) pingText.textContent = `${rtt} ms`;
-  });
+}
 
   // Init sound on socket connect so first interaction plays audio
   state.sound.init();
@@ -794,31 +756,33 @@ if (btnToggleTunnel) {
   });
 }
 
-// SMART CONTENT TELEPORTER CORE
+// SMART CONTENT TELEPORTER CORE (Firestore Real-time Transmission)
 async function sendTeleportPayload(payload) {
-  if (!state.socket || !state.socket.connected) {
-    showToast('Sunucu bağlantısı yok!', 'error');
-    return;
+  try {
+    state.sound.playTeleport();
+
+    if (state.cosmic) {
+      state.cosmic.triggerSendBurst();
+    }
+
+    payload.timestamp = payload.timestamp || Date.now();
+    payload.expiresAt = payload.expiresAt || (Date.now() + RETENTION_MS);
+    payload.senderId = state.deviceId;
+    payload.senderRole = state.role;
+    payload.id = payload.id || ('tp_' + Math.random().toString(36).substr(2, 9));
+
+    state.processedIds.add(payload.id);
+
+    // Save doc to Firestore
+    const roomMessagesRef = collection(db, 'rooms', state.roomId, 'messages');
+    await addDoc(roomMessagesRef, payload);
+
+    addActivityItem(payload, true);
+    showToast(`${payload.title || 'İçerik'} Gönderildi! 🛸`, 'success');
+  } catch (err) {
+    console.error('Teleport error:', err);
+    showToast('Gönderim hatası: ' + err.message, 'error');
   }
-
-  // Play sci-fi teleport sound
-  state.sound.playTeleport();
-
-  // Trigger Cosmic Starburst Particle Explosion on PC Screen
-  if (state.cosmic) {
-    state.cosmic.triggerSendBurst();
-  }
-
-  payload.timestamp = payload.timestamp || Date.now();
-  payload.expiresAt = payload.expiresAt || (Date.now() + (24 * 60 * 60 * 1000));
-
-  // Send packet over socket
-  state.socket.emit('teleport', payload);
-
-  // Add to local activity feed
-  addActivityItem(payload, true);
-
-  showToast(`${payload.title || 'İçerik'} Telefona Işınlandı!`, 'success');
 }
 
 // Handle File Processing & Sending
@@ -1289,21 +1253,27 @@ if (btnMobileSend) {
   });
 }
 
-// Clear History Button — wipes localStorage + server vault + UI
+// Clear History Button — wipes Firestore collection + localStorage + UI
 if (btnClearHistory) {
   btnClearHistory.addEventListener('click', async () => {
     if (!confirm('Tüm geçmişi ve depolanan dosyaları temizlemek istediğinize emin misiniz?\n\nBu işlem geri alınamaz.')) return;
 
-    // 1. Clear in-memory state
     state.history = [];
+    state.processedIds.clear();
 
-    // 2. Clear localStorage
     try { localStorage.removeItem(STORAGE_HISTORY_KEY); } catch (e) {}
 
-    // 3. Call server to clear vault
-    try { await fetch(`/api/room/${state.roomId}/clear`, { method: 'POST' }); } catch (e) {}
+    // Wipe Firestore collection
+    try {
+      const roomMessagesRef = collection(db, 'rooms', state.roomId, 'messages');
+      const snapshot = await getDocs(roomMessagesRef);
+      const batch = writeBatch(db);
+      snapshot.forEach(docSnap => batch.delete(docSnap.ref));
+      await batch.commit();
+    } catch (e) {
+      console.error('Error clearing Firestore history:', e);
+    }
 
-    // 4. Clear desktop feed UI
     if (recentActivityFeed) {
       recentActivityFeed.innerHTML = `
         <div id="history-empty-state" class="text-center py-8 text-slate-500 text-xs flex flex-col items-center gap-2">
@@ -1313,7 +1283,6 @@ if (btnClearHistory) {
       `;
     }
 
-    // 5. Clear mobile feed UI
     if (mobileStreamList) {
       mobileStreamList.innerHTML = `
         <div id="mobile-empty-state" class="glass-panel rounded-2xl p-8 text-center flex flex-col items-center justify-center gap-3 my-auto">
@@ -1437,13 +1406,10 @@ async function loadVaultHistory() {
 window.addEventListener('DOMContentLoaded', () => {
   if (window.lucide) window.lucide.createIcons();
   
-  // Load local history immediately (Instant 0ms render on refresh)
   loadLocalHistory();
 
-  // Initialize Cosmic Particle Canvas Engine
   state.cosmic = new CosmicParticleEngine('cosmic-canvas');
 
-  // Notification Button Handler
   const btnToggleNotif = document.getElementById('btn-toggle-notif');
   if (btnToggleNotif) {
     btnToggleNotif.addEventListener('click', async () => {
@@ -1451,7 +1417,6 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Auto-request sound & notification on first user interaction
   const enableAudioAndNotif = () => {
     state.sound.init();
     if (state.notifications && state.notifications.permission === 'default') {
@@ -1465,29 +1430,6 @@ window.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('touchstart', enableAudioAndNotif);
   window.addEventListener('pointerdown', enableAudioAndNotif);
 
-  initSocket();
-  loadServerInfo();
-  loadVaultHistory();
-
-  // Reconnect immediately when tab becomes visible (background to foreground switch)
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      if (state.socket) {
-        if (state.socket.disconnected) {
-          state.socket.connect();
-        } else {
-          // Re-register to sync room status instantly
-          state.socket.emit('register', {
-            role: state.role,
-            roomId: state.roomId,
-            deviceInfo: {
-              userAgent: navigator.userAgent,
-              platform: navigator.platform,
-              screen: `${window.innerWidth}x${window.innerHeight}`
-            }
-          });
-        }
-      }
-    }
-  });
+  initFirebaseSync();
+  updateNetworkDisplay();
 });
