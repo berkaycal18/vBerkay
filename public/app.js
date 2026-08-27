@@ -393,7 +393,10 @@ const state = {
   history: [],
   networkMode: 'global',
   publicUrl: window.location.origin,
-  processedIds: new Set()
+  processedIds: new Set(),
+  p2pChannel: null,
+  peerConnection: null,
+  p2pConnected: false
 };
 
 // URL Parameters & Unified Shared Room
@@ -618,7 +621,7 @@ function clearUIFeeds() {
   if (window.lucide) window.lucide.createIcons();
 }
 
-// Presence Heartbeat via Firestore
+// Presence Heartbeat & WebRTC Signaling via Firestore
 function startPresenceHeartbeat() {
   const presenceDocRef = doc(db, 'rooms', state.roomId, 'presence', state.deviceId);
   
@@ -651,29 +654,307 @@ function startPresenceHeartbeat() {
 
     state.activePeers = mobileCount;
     updateConnectionUI(mobileCount, hasDesktop);
-    if (pingText) pingText.textContent = 'Firebase Canlı';
   });
+
+  // Initialize WebRTC P2P Signaling
+  initWebRTCP2P();
+}
+
+// ----------------------------------------------------
+// ULTRA-FAST WEBRTC P2P DIRECT BINARY STREAMING ENGINE
+// ----------------------------------------------------
+const rtcIceConfig = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' }
+  ]
+};
+
+let activeP2PIncoming = null;
+
+function initWebRTCP2P() {
+  try {
+    if (state.peerConnection) {
+      try { state.peerConnection.close(); } catch(e) {}
+    }
+
+    state.peerConnection = new RTCPeerConnection(rtcIceConfig);
+    const pc = state.peerConnection;
+
+    // ICE Candidate handler
+    pc.onicecandidate = async (e) => {
+      if (e.candidate) {
+        try {
+          const candRef = doc(db, 'rooms', state.roomId, 'signals', `candidate_${state.role}_${Date.now()}`);
+          await setDoc(candRef, {
+            senderRole: state.role,
+            candidate: JSON.stringify(e.candidate)
+          });
+        } catch(err) {}
+      }
+    };
+
+    if (state.role === 'desktop') {
+      // Desktop creates DataChannel & Offer
+      const dc = pc.createDataChannel('mova_teleport_stream', { ordered: true });
+      setupDataChannelEvents(dc);
+
+      pc.onnegotiationneeded = async () => {
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          const offerDocRef = doc(db, 'rooms', state.roomId, 'signals', 'offer');
+          await setDoc(offerDocRef, {
+            sdp: JSON.stringify(offer),
+            senderId: state.deviceId,
+            timestamp: Date.now()
+          });
+        } catch (e) {
+          console.error('P2P Offer Error:', e);
+        }
+      };
+
+      // Listen for Mobile's Answer
+      const answerDocRef = doc(db, 'rooms', state.roomId, 'signals', 'answer');
+      onSnapshot(answerDocRef, async (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data && data.sdp && pc.signalingState !== 'stable') {
+            try {
+              const answer = JSON.parse(data.sdp);
+              await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            } catch (e) {}
+          }
+        }
+      });
+    } else {
+      // Mobile listens for DataChannel & Offer
+      pc.ondatachannel = (e) => {
+        setupDataChannelEvents(e.channel);
+      };
+
+      const offerDocRef = doc(db, 'rooms', state.roomId, 'signals', 'offer');
+      onSnapshot(offerDocRef, async (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data && data.sdp && pc.signalingState === 'stable') {
+            try {
+              const offer = JSON.parse(data.sdp);
+              await pc.setRemoteDescription(new RTCSessionDescription(offer));
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+
+              const answerDocRef = doc(db, 'rooms', state.roomId, 'signals', 'answer');
+              await setDoc(answerDocRef, {
+                sdp: JSON.stringify(answer),
+                senderId: state.deviceId,
+                timestamp: Date.now()
+              });
+            } catch (e) {
+              console.error('P2P Answer Error:', e);
+            }
+          }
+        }
+      });
+    }
+
+    // Listen for ICE Candidates
+    const signalsColRef = collection(db, 'rooms', state.roomId, 'signals');
+    onSnapshot(signalsColRef, (snapshot) => {
+      snapshot.docChanges().forEach(async (change) => {
+        if (change.type === 'added') {
+          const data = change.doc.data();
+          if (data && data.candidate && data.senderRole !== state.role) {
+            try {
+              const cand = JSON.parse(data.candidate);
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch (e) {}
+          }
+        }
+      });
+    });
+
+  } catch (err) {
+    console.error('WebRTC Init Error:', err);
+  }
+}
+
+function setupDataChannelEvents(dc) {
+  dc.binaryType = 'arraybuffer';
+  state.p2pChannel = dc;
+
+  dc.onopen = () => {
+    state.p2pConnected = true;
+    updateConnectionUI(state.activePeers, true);
+    showToast('⚡ MOVADROP P2P Aktif! (Sıfır Gecikme Işık Hızı)', 'success');
+  };
+
+  dc.onclose = () => {
+    state.p2pConnected = false;
+    updateConnectionUI(state.activePeers, true);
+  };
+
+  dc.onmessage = (e) => {
+    handleP2PMessage(e.data);
+  };
+}
+
+function handleP2PMessage(raw) {
+  if (typeof raw === 'string') {
+    try {
+      const msg = JSON.parse(raw);
+      if (msg.type === 'p2p_file_header') {
+        activeP2PIncoming = {
+          id: msg.id,
+          name: msg.name,
+          title: msg.name,
+          size: msg.size,
+          mime: msg.mime,
+          fileType: msg.fileType,
+          totalChunks: msg.totalChunks,
+          receivedChunks: 0,
+          buffers: []
+        };
+        showTransferProgress(msg.name, msg.size);
+      } else if (msg.type === 'p2p_file_done') {
+        if (activeP2PIncoming && activeP2PIncoming.id === msg.id) {
+          const blob = new Blob(activeP2PIncoming.buffers, { type: activeP2PIncoming.mime || 'application/octet-stream' });
+          const blobUrl = URL.createObjectURL(blob);
+          
+          const payload = {
+            id: activeP2PIncoming.id,
+            type: activeP2PIncoming.fileType,
+            title: activeP2PIncoming.name,
+            name: activeP2PIncoming.name,
+            size: activeP2PIncoming.size,
+            mime: activeP2PIncoming.mime,
+            data: blobUrl,
+            timestamp: Date.now(),
+            expiresAt: Date.now() + RETENTION_MS
+          };
+
+          state.processedIds.add(payload.id);
+          handleIncomingPacket(payload);
+          hideTransferProgress();
+          activeP2PIncoming = null;
+        }
+      }
+    } catch(e) {}
+  } else if (raw instanceof ArrayBuffer) {
+    if (activeP2PIncoming) {
+      activeP2PIncoming.buffers.push(raw);
+      activeP2PIncoming.receivedChunks++;
+      const pct = Math.round((activeP2PIncoming.receivedChunks / activeP2PIncoming.totalChunks) * 100);
+      updateTransferProgress(pct, activeP2PIncoming.receivedChunks, activeP2PIncoming.totalChunks);
+    }
+  }
+}
+
+// Send File Directly over WebRTC DataChannel (Instant 0-Lag Raw Binary Streaming)
+async function sendP2PFile(file, type) {
+  const dc = state.p2pChannel;
+  if (!dc || dc.readyState !== 'open') return false;
+
+  const CHUNK_SIZE = 64 * 1024; // 64 KB binary packets
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  const msgId = 'tp_' + Math.random().toString(36).substr(2, 9);
+
+  showTransferProgress(file.name, file.size);
+
+  // Send Header
+  dc.send(JSON.stringify({
+    type: 'p2p_file_header',
+    id: msgId,
+    name: file.name,
+    size: file.size,
+    mime: file.type,
+    fileType: type,
+    totalChunks: totalChunks
+  }));
+
+  // Create immediate local preview URL
+  const localBlobUrl = URL.createObjectURL(file);
+  const localPayload = {
+    id: msgId,
+    type: type,
+    title: file.name,
+    name: file.name,
+    size: file.size,
+    mime: file.type,
+    data: localBlobUrl,
+    timestamp: Date.now(),
+    expiresAt: Date.now() + RETENTION_MS
+  };
+
+  state.processedIds.add(msgId);
+  addActivityItem(localPayload, true);
+
+  state.sound.playTeleport();
+  if (state.cosmic) state.cosmic.triggerSendBurst();
+
+  let offset = 0;
+  let chunkIndex = 0;
+
+  while (offset < file.size) {
+    // Flow control: wait if buffer full
+    if (dc.bufferedAmount > 4 * 1024 * 1024) {
+      await new Promise(r => setTimeout(r, 20));
+    }
+
+    const slice = file.slice(offset, offset + CHUNK_SIZE);
+    const buffer = await slice.arrayBuffer();
+    dc.send(buffer);
+
+    offset += CHUNK_SIZE;
+    chunkIndex++;
+    const pct = Math.round((chunkIndex / totalChunks) * 100);
+    updateTransferProgress(pct, offset, file.size);
+  }
+
+  // Send Done
+  dc.send(JSON.stringify({
+    type: 'p2p_file_done',
+    id: msgId
+  }));
+
+  hideTransferProgress();
+  showToast(`⚡ ${file.name} Işık Hızında Işınlandı! (P2P)`, 'success');
+  return true;
 }
 
 function updateConnectionUI(connectedMobiles, hasDesktop) {
   if (state.role === 'desktop') {
-    if (connectedMobiles > 0) {
+    if (state.p2pConnected) {
+      connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 shadow-sm';
+      connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span><span>⚡ P2P Aktif (Işık Hızı)</span>`;
+      if (connectedPhoneName) connectedPhoneName.textContent = 'Telefon P2P Bağlı (0ms Gecikme)';
+      if (pingText) pingText.textContent = '< 5 ms';
+    } else if (connectedMobiles > 0) {
       connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-500/15 border border-emerald-500/40 text-emerald-300';
       connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>${connectedMobiles} Telefon Bağlı</span>`;
       if (connectedPhoneName) connectedPhoneName.textContent = `${connectedMobiles} Cihaz Aktif`;
+      if (pingText) pingText.textContent = 'Bulut Canlı';
     } else {
       connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-indigo-500/10 border border-indigo-500/30 text-indigo-300';
       connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-indigo-400"></span><span>Bulut Depolama Aktif</span>`;
       if (connectedPhoneName) connectedPhoneName.textContent = 'Bulut Vault Aktif (Gönderebilirsiniz)';
+      if (pingText) pingText.textContent = 'Hazır';
     }
   } else {
     // Mobile view
-    if (hasDesktop) {
+    if (state.p2pConnected) {
+      connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 shadow-sm';
+      connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span><span>⚡ PC P2P Bağlı</span>`;
+      if (pingText) pingText.textContent = '< 5 ms';
+    } else if (hasDesktop) {
       connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-500/15 border border-emerald-500/40 text-emerald-300';
       connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>PC Bağlı</span>`;
+      if (pingText) pingText.textContent = 'Bulut Canlı';
     } else {
       connectionStatusPill.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-indigo-500/10 border border-indigo-500/30 text-indigo-300';
       connectionStatusPill.innerHTML = `<span class="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span><span>Bulut Vault Modu</span>`;
+      if (pingText) pingText.textContent = 'Bulut';
     }
   }
 }
@@ -870,26 +1151,46 @@ async function sendChunkedPayload(file, type) {
   reader.readAsDataURL(file);
 }
 
+// Base64 to Native Blob Object URL Helper (Zero Memory Lag, Instant Hardware Video Playback)
+function base64ToBlobUrl(dataUrl, mime = 'video/mp4') {
+  try {
+    if (!dataUrl || typeof dataUrl !== 'string') return dataUrl;
+    if (dataUrl.startsWith('blob:')) return dataUrl;
+    const parts = dataUrl.split(',');
+    const bstr = atob(parts[1] || parts[0]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n);
+    }
+    const blob = new Blob([u8arr], { type: mime });
+    return URL.createObjectURL(blob);
+  } catch (e) {
+    return dataUrl;
+  }
+}
+
 // Assemble Chunked Item on Receiver
 async function assembleChunkedItem(item) {
   try {
     const chunksRef = collection(db, 'rooms', state.roomId, 'messages', item.id, 'chunks');
     const q = query(chunksRef, orderBy('index', 'asc'));
     
-    // Poll or listen until all chunks arrive
     const snapshot = await getDocs(q);
     const chunks = [];
     snapshot.forEach(docSnap => chunks.push(docSnap.data()));
     
     if (chunks.length < item.totalChunks) {
-      // Retry in 1.5 seconds if some chunks are still uploading
-      setTimeout(() => assembleChunkedItem(item), 1500);
+      setTimeout(() => assembleChunkedItem(item), 1000);
       return;
     }
 
     chunks.sort((a, b) => a.index - b.index);
     const fullDataUrl = chunks.map(c => c.data).join('');
-    item.data = fullDataUrl;
+    
+    // Convert to high-speed Blob URL for zero-lag playback
+    const fastBlobUrl = base64ToBlobUrl(fullDataUrl, item.mime || (item.type === 'video' ? 'video/mp4' : 'application/octet-stream'));
+    item.data = fastBlobUrl;
 
     updateCardWithAssembledData(item);
   } catch (err) {
@@ -904,7 +1205,7 @@ function updateCardWithAssembledData(item) {
     if (item.type === 'video') {
       container.innerHTML = `
         <div class="rounded-xl overflow-hidden bg-slate-950 border border-slate-800">
-          <video controls playsinline class="w-full max-h-64 rounded-xl" src="${item.data}"></video>
+          <video controls playsinline preload="auto" class="w-full max-h-64 rounded-xl" src="${item.data}"></video>
         </div>
         <div class="flex items-center justify-between mt-1">
           <span class="text-xs text-slate-400">${formatFileSize(item.size || 0)}</span>
@@ -927,7 +1228,7 @@ function updateCardWithAssembledData(item) {
             </div>
           </div>
         </div>
-        <div class="flex items-center justify-end">
+        <div class="flex items-center justify-end mt-1">
           <a href="${item.data}" download="${item.name || 'teleport_file'}" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition flex items-center gap-2 shadow-lg">
             <i data-lucide="download" class="w-4 h-4"></i>
             <span>Dosyayı İndir</span>
@@ -991,7 +1292,7 @@ function optimizeImageFile(file) {
   });
 }
 
-// Handle File Processing & Sending (PC & Mobile Safe - Supports up to 50MB Videos & Files)
+// Handle File Processing & Sending (PC & Mobile Safe - Ultra High-Speed Hybrid P2P / 50MB Cloud)
 async function processAndSendFiles(fileList) {
   if (!fileList || fileList.length === 0) return;
 
@@ -1016,6 +1317,13 @@ async function processAndSendFiles(fileList) {
     else if (file.type === 'application/pdf') type = 'pdf';
 
     try {
+      // 1. FAST PATH: Direct WebRTC P2P Streaming (Instant 0-Lag, Full Bandwidth)
+      if (state.p2pConnected && state.p2pChannel && state.p2pChannel.readyState === 'open') {
+        const sentP2P = await sendP2PFile(file, type);
+        if (sentP2P) continue;
+      }
+
+      // 2. FALLBACK PATH: Cloud Sync (Images <15MB fast optimize, Large files 50MB parallel chunking)
       if (isImage && file.size < 15 * 1024 * 1024) {
         showTransferProgress(file.name, file.size);
         updateTransferProgress(50, file.size / 2, file.size);
@@ -1036,7 +1344,7 @@ async function processAndSendFiles(fileList) {
         await sendTeleportPayload(payload);
         hideTransferProgress();
       } else if (file.size > 700 * 1024) {
-        // Large Video or File (>700KB) -> Use Chunked Teleport
+        // Large Video or File (>700KB) -> Parallel Chunked Teleport
         await sendChunkedPayload(file, type);
       } else {
         // Small file (<700KB) -> Direct single document
