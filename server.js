@@ -54,14 +54,86 @@ function getLocalIpAddresses() {
   return addresses.length > 0 ? addresses : ['127.0.0.1'];
 }
 
+// Dedicated 24-Hour Storage & Log System
+const VAULT_STORAGE_DIR = path.join(__dirname, 'vault_storage');
+const VAULT_FILES_DIR = path.join(VAULT_STORAGE_DIR, 'files');
+const VAULT_LOGS_DIR = path.join(VAULT_STORAGE_DIR, 'logs');
+const VAULT_LOG_FILE = path.join(VAULT_LOGS_DIR, 'vault_activity.json');
+
+// Ensure directories exist on startup
+if (!fs.existsSync(VAULT_STORAGE_DIR)) fs.mkdirSync(VAULT_STORAGE_DIR, { recursive: true });
+if (!fs.existsSync(VAULT_FILES_DIR)) fs.mkdirSync(VAULT_FILES_DIR, { recursive: true });
+if (!fs.existsSync(VAULT_LOGS_DIR)) fs.mkdirSync(VAULT_LOGS_DIR, { recursive: true });
+
+// Serve saved physical files statically
+app.use('/vault_files', express.static(VAULT_FILES_DIR, { maxAge: '1d' }));
+
 const PORT = process.env.PORT || 3456;
 
 // In-memory room state and 24-Hour (1 Day) Persistent Vault Storage
 const rooms = new Map();
-const VAULT_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 Hours (1 Day) Auto-Expiry
+const VAULT_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 Hours Auto-Expiry
 const VAULT_FILE = path.join(__dirname, 'vault_storage.json');
 
 let clearTimes = {};
+
+// Helper: Append log record to activity log file
+function logVaultActivity(entry) {
+  try {
+    let logs = [];
+    if (fs.existsSync(VAULT_LOG_FILE)) {
+      const raw = fs.readFileSync(VAULT_LOG_FILE, 'utf-8');
+      logs = JSON.parse(raw);
+    }
+    logs.unshift({
+      id: entry.id,
+      timestamp: entry.timestamp,
+      dateFormatted: new Date(entry.timestamp).toISOString().replace('T', ' ').substring(0, 19),
+      expiresAt: entry.expiresAt,
+      type: entry.type,
+      title: entry.title || entry.name || 'Mesaj',
+      size: entry.size || 0,
+      mime: entry.mime || '',
+      roomId: entry.roomId || 'main',
+      savedFilePath: entry.savedFilePath || null
+    });
+
+    // Keep logs within 24h window
+    const now = Date.now();
+    logs = logs.filter(l => (l.expiresAt || (l.timestamp + VAULT_RETENTION_MS)) > now);
+
+    fs.writeFileSync(VAULT_LOG_FILE, JSON.stringify(logs, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('Error writing activity log:', e);
+  }
+}
+
+// Helper: Save Base64 file/video data to physical disk file
+function savePayloadFileToDisk(payload) {
+  try {
+    if (!payload.data || typeof payload.data !== 'string' || !payload.data.startsWith('data:')) {
+      return null;
+    }
+
+    const matches = payload.data.match(/^data:(.+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) return null;
+
+    const base64Data = matches[2];
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    const safeName = (payload.name || payload.title || 'file').replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    const fileName = `${payload.id}_${safeName}`;
+    const filePath = path.join(VAULT_FILES_DIR, fileName);
+
+    fs.writeFileSync(filePath, buffer);
+    const fileUrl = `/vault_files/${fileName}`;
+
+    return { filePath, fileUrl };
+  } catch (e) {
+    console.error('Error saving file to disk:', e);
+    return null;
+  }
+}
 
 // Load vault items from disk
 function loadVaultFromDisk() {
@@ -71,7 +143,6 @@ function loadVaultFromDisk() {
       const now = Date.now();
       if (data && typeof data === 'object' && !Array.isArray(data)) {
         clearTimes = data.clearTimes || {};
-        // Fallback for older database formats that only had a single clearTime
         if (data.clearTime && Object.keys(clearTimes).length === 0) {
           clearTimes['main'] = data.clearTime;
         }
@@ -89,7 +160,7 @@ function loadVaultFromDisk() {
 
 let vaultItems = loadVaultFromDisk();
 
-// Save vault items to disk
+// Save vault items to disk & Purge files older than 24 hours
 function saveVaultToDisk() {
   try {
     const now = Date.now();
@@ -100,11 +171,46 @@ function saveVaultToDisk() {
   }
 }
 
-// Clean expired vault items periodically
-function cleanExpiredVaultItems() {
-  saveVaultToDisk();
+// AUTOMATIC 24-HOUR DISK PURGE ROUTINE (Scans files & logs every 10 mins)
+function purgeExpiredVaultData() {
+  try {
+    const now = Date.now();
+    
+    // 1. Purge expired physical files in vault_storage/files/
+    if (fs.existsSync(VAULT_FILES_DIR)) {
+      const files = fs.readdirSync(VAULT_FILES_DIR);
+      files.forEach(file => {
+        const filePath = path.join(VAULT_FILES_DIR, file);
+        try {
+          const stats = fs.statSync(filePath);
+          const ageMs = now - stats.mtimeMs;
+          if (ageMs > VAULT_RETENTION_MS) {
+            fs.unlinkSync(filePath);
+            console.log(`[VAULT PURGE 24H] Deleted expired physical file: ${file}`);
+          }
+        } catch (e) {}
+      });
+    }
+
+    // 2. Purge expired JSON records
+    saveVaultToDisk();
+
+    // 3. Purge expired activity logs
+    if (fs.existsSync(VAULT_LOG_FILE)) {
+      const raw = fs.readFileSync(VAULT_LOG_FILE, 'utf-8');
+      let logs = JSON.parse(raw);
+      logs = logs.filter(l => (l.expiresAt || (l.timestamp + VAULT_RETENTION_MS)) > now);
+      fs.writeFileSync(VAULT_LOG_FILE, JSON.stringify(logs, null, 2), 'utf-8');
+    }
+  } catch (e) {
+    console.error('Error in 24h vault purge routine:', e);
+  }
 }
-setInterval(cleanExpiredVaultItems, 15 * 60 * 1000); // Check every 15 mins
+
+// Run 24-Hour Purge Routine every 10 minutes
+setInterval(purgeExpiredVaultData, 10 * 60 * 1000);
+// Also run once at server startup
+purgeExpiredVaultData();
 
 // Helper to start global Cloudflare tunnel
 async function startTunnel() {
@@ -166,6 +272,41 @@ app.get('/api/info', async (req, res) => {
     isCloud: isCloudHost,
     isTunnelActive: isCloudHost ? true : !!publicUrl
   });
+});
+
+// API endpoint to inspect 24-hour vault storage status and activity logs
+app.get('/api/vault/status', (req, res) => {
+  try {
+    let filesCount = 0;
+    let totalBytes = 0;
+    if (fs.existsSync(VAULT_FILES_DIR)) {
+      const files = fs.readdirSync(VAULT_FILES_DIR);
+      filesCount = files.length;
+      files.forEach(f => {
+        try { totalBytes += fs.statSync(path.join(VAULT_FILES_DIR, f)).size; } catch(e) {}
+      });
+    }
+
+    let logs = [];
+    if (fs.existsSync(VAULT_LOG_FILE)) {
+      logs = JSON.parse(fs.readFileSync(VAULT_LOG_FILE, 'utf-8'));
+    }
+
+    res.json({
+      ok: true,
+      storageDirectory: VAULT_STORAGE_DIR,
+      filesDirectory: VAULT_FILES_DIR,
+      logsDirectory: VAULT_LOGS_DIR,
+      totalSavedFiles: filesCount,
+      totalDiskUsageBytes: totalBytes,
+      totalDiskUsageFormatted: (totalBytes / (1024 * 1024)).toFixed(2) + ' MB',
+      autoPurgeInterval: '10 Minutes',
+      retentionPolicy: '24 Hours (86,400,000 ms)',
+      recentLogs: logs.slice(0, 20)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // API endpoint to toggle global tunnel
@@ -325,14 +466,24 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const id = payload.id || 'tp_' + Math.random().toString(36).substr(2, 9);
+    let diskInfo = null;
+
+    // Save Base64 file/video data to physical file on disk
+    if (payload.data && typeof payload.data === 'string' && payload.data.startsWith('data:')) {
+      diskInfo = savePayloadFileToDisk({ ...payload, id });
+    }
+
     const packet = {
       ...payload,
+      id,
       roomId: currentRoom,
-      id: payload.id || 'tp_' + Math.random().toString(36).substr(2, 9),
       timestamp: Date.now(),
       expiresAt: Date.now() + VAULT_RETENTION_MS,
       senderId: socket.id,
-      senderRole: clientRole
+      senderRole: clientRole,
+      data: diskInfo ? diskInfo.fileUrl : payload.data, // Fast static file URL!
+      savedFilePath: diskInfo ? diskInfo.filePath : null
     };
 
     // Store in global persistent vault and save to disk
@@ -340,11 +491,13 @@ io.on('connection', (socket) => {
     if (vaultItems.length > 100) vaultItems = vaultItems.slice(0, 100);
     saveVaultToDisk();
 
+    // Log vault activity to vault_activity.json
+    logVaultActivity(packet);
+
     const socketsInRoom = io.sockets.adapter.rooms.get(currentRoom);
-    console.log(`[TELEPORT] room="${currentRoom}" sender=${socket.id} role=${clientRole} sockets_in_room=${socketsInRoom ? socketsInRoom.size : 0}`);
+    console.log(`[TELEPORT 24H VAULT] room="${currentRoom}" type=${payload.type} fileSaved=${!!diskInfo} sockets=${socketsInRoom ? socketsInRoom.size : 0}`);
     
     socket.to(currentRoom).emit('teleport-receive', packet);
-    console.log(`[TELEPORT] emitted teleport-receive to room "${currentRoom}"`);
   });
 
   // High-Speed Chunk Streaming
