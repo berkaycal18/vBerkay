@@ -856,7 +856,8 @@ async function sendP2PFile(file, type) {
   const dc = state.p2pChannel;
   if (!dc || dc.readyState !== 'open') return false;
 
-  const CHUNK_SIZE = 64 * 1024; // 64 KB binary packets
+  // Safe WebRTC chunk size (16KB) prevents SCTP packet drops on iOS Safari / Chrome
+  const CHUNK_SIZE = 16 * 1024;
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
   const msgId = 'tp_' + Math.random().toString(36).substr(2, 9);
 
@@ -868,7 +869,7 @@ async function sendP2PFile(file, type) {
     id: msgId,
     name: file.name,
     size: file.size,
-    mime: file.type,
+    mime: file.type || (type === 'video' ? 'video/mp4' : 'application/octet-stream'),
     fileType: type,
     totalChunks: totalChunks
   }));
@@ -881,7 +882,7 @@ async function sendP2PFile(file, type) {
     title: file.name,
     name: file.name,
     size: file.size,
-    mime: file.type,
+    mime: file.type || 'video/mp4',
     data: localBlobUrl,
     timestamp: Date.now(),
     expiresAt: Date.now() + RETENTION_MS
@@ -897,9 +898,9 @@ async function sendP2PFile(file, type) {
   let chunkIndex = 0;
 
   while (offset < file.size) {
-    // Flow control: wait if buffer full
-    if (dc.bufferedAmount > 4 * 1024 * 1024) {
-      await new Promise(r => setTimeout(r, 20));
+    // Flow control: pause if data channel buffer gets ahead
+    if (dc.bufferedAmount > 64 * 1024) {
+      await new Promise(r => setTimeout(r, 5));
     }
 
     const slice = file.slice(offset, offset + CHUNK_SIZE);
@@ -1198,6 +1199,27 @@ async function assembleChunkedItem(item) {
   }
 }
 
+// Global Video Error Fallback (e.g. iPhone HEVC / MOV codec on Windows Chrome)
+window.handleVideoPlayerError = function(videoEl, fileName, downloadUrl) {
+  const container = videoEl.parentElement;
+  if (!container) return;
+  container.className = 'rounded-xl p-4 bg-slate-900 border border-slate-700/80 flex flex-col gap-2.5 text-center items-center justify-center';
+  container.innerHTML = `
+    <div class="w-10 h-10 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center">
+      <i data-lucide="video" class="w-5 h-5"></i>
+    </div>
+    <div>
+      <h5 class="text-xs font-bold text-slate-200">${escapeHtml(fileName || 'Video Dosyası')}</h5>
+      <p class="text-[11px] text-slate-400 mt-0.5">Telefon formatı (MOV/HEVC) bilgisayara ulaştı.</p>
+    </div>
+    <a href="${downloadUrl}" download="${escapeHtml(fileName || 'video.mp4')}" class="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition">
+      <i data-lucide="download" class="w-4 h-4"></i>
+      <span>Bilgisayarda Aç / İndir</span>
+    </a>
+  `;
+  if (window.lucide) window.lucide.createIcons();
+};
+
 // Update Card When Chunks Finished Downloading
 function updateCardWithAssembledData(item) {
   const containers = document.querySelectorAll(`[data-chunk-id="${item.id}"]`);
@@ -1205,13 +1227,13 @@ function updateCardWithAssembledData(item) {
     if (item.type === 'video') {
       container.innerHTML = `
         <div class="rounded-xl overflow-hidden bg-slate-950 border border-slate-800">
-          <video controls playsinline preload="auto" class="w-full max-h-64 rounded-xl" src="${item.data}"></video>
+          <video controls playsinline preload="metadata" class="w-full max-h-64 rounded-xl" src="${item.data}" onerror="handleVideoPlayerError(this, '${escapeJsString(item.name || 'video.mp4')}', '${item.data}')"></video>
         </div>
         <div class="flex items-center justify-between mt-1">
           <span class="text-xs text-slate-400">${formatFileSize(item.size || 0)}</span>
           <a href="${item.data}" download="${item.name || 'video.mp4'}" class="px-3.5 py-1.5 rounded-xl bg-indigo-600/80 hover:bg-indigo-600 text-white text-xs font-semibold transition flex items-center gap-1.5 shadow">
             <i data-lucide="download" class="w-3.5 h-3.5"></i>
-            <span>İndir</span>
+            <span>İndir / Kaydet</span>
           </a>
         </div>
       `;
@@ -1482,13 +1504,13 @@ function createContentCard(item, isSentByMe) {
     bodyHtml = `
       <div data-chunk-id="${item.id}">
         <div class="rounded-xl overflow-hidden bg-slate-950 border border-slate-800">
-          <video controls playsinline class="w-full max-h-64 rounded-xl" src="${item.data}"></video>
+          <video controls playsinline preload="metadata" class="w-full max-h-64 rounded-xl" src="${item.data}" onerror="handleVideoPlayerError(this, '${escapeJsString(item.name || 'video.mp4')}', '${item.data}')"></video>
         </div>
         <div class="flex items-center justify-between mt-1">
           <span class="text-xs text-slate-400">${formatFileSize(item.size || 0)}</span>
           <a href="${item.data}" download="${item.name || 'video.mp4'}" class="px-3.5 py-1.5 rounded-xl bg-indigo-600/80 hover:bg-indigo-600 text-white text-xs font-semibold transition flex items-center gap-1.5 shadow">
             <i data-lucide="download" class="w-3.5 h-3.5"></i>
-            <span>İndir</span>
+            <span>İndir / Kaydet</span>
           </a>
         </div>
       </div>
