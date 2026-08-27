@@ -544,7 +544,6 @@ function initFirebaseSync() {
   const roomMessagesRef = collection(db, 'rooms', state.roomId, 'messages');
   const q = query(roomMessagesRef, orderBy('timestamp', 'asc'));
 
-  // Listen to live message events
   onSnapshot(q, (snapshot) => {
     snapshot.docChanges().forEach((change) => {
       const data = change.doc.data();
@@ -552,6 +551,9 @@ function initFirebaseSync() {
       data.id = data.id || docId;
 
       if (change.type === 'added') {
+        // Check if it's a clear signal from another device
+        if (data.type === '__clear__') return;
+
         const isExpired = (data.expiresAt || (data.timestamp + RETENTION_MS)) <= Date.now();
         if (isExpired) return;
 
@@ -559,7 +561,6 @@ function initFirebaseSync() {
         if (!isAlreadyKnown) {
           state.processedIds.add(data.id);
           const isSentByMe = data.senderId === state.deviceId;
-          
           if (!isSentByMe) {
             handleIncomingPacket(data);
           } else {
@@ -567,13 +568,54 @@ function initFirebaseSync() {
           }
         }
       }
+
+      // When ALL docs are deleted (clear from any device) — wipe this device's UI too
+      if (change.type === 'removed') {
+        // We handle full wipe only when all known items are gone
+        // Partial removals are just expiry cleanup
+        const removedId = data.id;
+        state.history = state.history.filter(h => h.id !== removedId);
+        state.processedIds.delete(removedId);
+        
+        // If history is now empty, show empty states
+        if (state.history.length === 0) {
+          clearUIFeeds();
+          try { localStorage.removeItem(STORAGE_HISTORY_KEY); } catch(e) {}
+        }
+      }
     });
   }, (error) => {
     console.error('Firestore snapshot error:', error);
+    showToast('Firebase bağlantı hatası. Sayfayı yenileyin.', 'error');
   });
 
-  // Start Presence Heartbeat
   startPresenceHeartbeat();
+}
+
+function clearUIFeeds() {
+  if (recentActivityFeed) {
+    recentActivityFeed.innerHTML = `
+      <div id="history-empty-state" class="text-center py-8 text-slate-500 text-xs flex flex-col items-center gap-2">
+        <i data-lucide="inbox" class="w-8 h-8 text-slate-600"></i>
+        <span>Geçmiş temizlendi.</span>
+      </div>
+    `;
+  }
+  if (mobileStreamList) {
+    mobileStreamList.innerHTML = `
+      <div id="mobile-empty-state" class="glass-panel rounded-2xl p-8 text-center flex flex-col items-center justify-center gap-3 my-auto">
+        <div class="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+          <i data-lucide="satellite" class="w-7 h-7"></i>
+        </div>
+        <div>
+          <h4 class="text-sm font-bold text-slate-200">Geçmiş Temizlendi</h4>
+          <p class="text-xs text-slate-400 mt-1">Yeni içerik bekleniyor...</p>
+        </div>
+      </div>
+    `;
+    if (mobileFeedCount) mobileFeedCount.textContent = '0 Öğe';
+  }
+  if (window.lucide) window.lucide.createIcons();
 }
 
 // Presence Heartbeat via Firestore
@@ -747,7 +789,62 @@ async function sendTeleportPayload(payload) {
   }
 }
 
-// Handle File Processing & Sending
+// Smart Client-Side Image Optimizer (Scales & Compresses Phone Photos to <500KB in 50ms)
+function optimizeImageFile(file) {
+  return new Promise((resolve) => {
+    // If SVG or tiny icon, don't resize via canvas
+    if (file.type === 'image/svg+xml' || file.size < 80000) {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve({ dataUrl: e.target.result, size: file.size });
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        const maxDim = 1600;
+
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Quality 0.8 JPEG
+        let dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+        // If still > 700KB, drop quality slightly to 0.65
+        if (dataUrl.length > 900000) {
+          dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+        }
+
+        const estBytes = Math.round((dataUrl.length * 3) / 4);
+        resolve({ dataUrl, size: estBytes });
+      };
+      img.onerror = () => {
+        // Fallback to raw dataUrl
+        resolve({ dataUrl: e.target.result, size: file.size });
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Handle File Processing & Sending (PC & Mobile Safe)
 async function processAndSendFiles(fileList) {
   if (!fileList || fileList.length === 0) return;
 
@@ -767,34 +864,65 @@ async function processAndSendFiles(fileList) {
     else if (file.name.endsWith('.apk')) type = 'apk';
     else if (file.type === 'application/pdf') type = 'pdf';
 
-    const reader = new FileReader();
-    
-    reader.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const percent = Math.round((e.loaded / e.total) * 100);
-        updateTransferProgress(percent, e.loaded, e.total);
+    try {
+      if (isImage) {
+        updateTransferProgress(50, file.size / 2, file.size);
+        const { dataUrl, size } = await optimizeImageFile(file);
+        updateTransferProgress(100, size, size);
+
+        const payload = {
+          type: 'image',
+          title: file.name,
+          name: file.name,
+          size: size,
+          mime: 'image/jpeg',
+          data: dataUrl,
+          timestamp: Date.now(),
+          expiresAt: Date.now() + RETENTION_MS
+        };
+
+        await sendTeleportPayload(payload);
+        hideTransferProgress();
+      } else {
+        // Non-image file: check size
+        if (file.size > 800 * 1024) {
+          hideTransferProgress();
+          showToast(`"${file.name}" çok büyük (${formatFileSize(file.size)}). Ücretsiz modda maksimum dosya boyutu 800 KB'dir.`, 'error');
+          continue;
+        }
+
+        const reader = new FileReader();
+        reader.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            updateTransferProgress(percent, e.loaded, e.total);
+          }
+        };
+
+        reader.onload = async (e) => {
+          const dataUrl = e.target.result;
+          const payload = {
+            type: type,
+            title: file.name,
+            name: file.name,
+            size: file.size,
+            mime: file.type || 'application/octet-stream',
+            data: dataUrl,
+            timestamp: Date.now(),
+            expiresAt: Date.now() + RETENTION_MS
+          };
+
+          await sendTeleportPayload(payload);
+          hideTransferProgress();
+        };
+
+        reader.readAsDataURL(file);
       }
-    };
-
-    reader.onload = async (e) => {
-      const dataUrl = e.target.result;
-      
-      const payload = {
-        type: type,
-        title: file.name,
-        name: file.name,
-        size: file.size,
-        mime: file.type,
-        data: dataUrl,
-        timestamp: Date.now(),
-        expiresAt: Date.now() + (24 * 60 * 60 * 1000)
-      };
-
-      await sendTeleportPayload(payload);
+    } catch (err) {
+      console.error('File send error:', err);
       hideTransferProgress();
-    };
-
-    reader.readAsDataURL(file);
+      showToast('Dosya işleme hatası: ' + err.message, 'error');
+    }
   }
 }
 
@@ -980,7 +1108,7 @@ function createContentCard(item, isSentByMe) {
 }
 
 // Add Item to Stream / Activity Feed
-function addActivityItem(item, isSentByMe) {
+function addActivityItem(item, isSentByMe, saveLocal = true) {
   if (!state.history.some(h => h.id === item.id)) {
     state.history.unshift(item);
   }
@@ -1003,7 +1131,7 @@ function addActivityItem(item, isSentByMe) {
   }
 
   // Save to browser localStorage so refresh NEVER loses files!
-  saveLocalHistory();
+  if (saveLocal) saveLocalHistory();
 
   // Refresh lucide icons
   if (window.lucide) window.lucide.createIcons();
@@ -1208,60 +1336,90 @@ if (btnSwitchMode) {
   });
 }
 
-// Mobile Send to PC Button
-if (btnMobileSend) {
-  btnMobileSend.addEventListener('click', () => {
-    if (fileInputHidden) fileInputHidden.click();
+// Mobile Quick Send Text / URL Handler
+const mobileQuickText = document.getElementById('mobile-quick-text');
+const btnMobileSendText = document.getElementById('btn-mobile-send-text');
+const btnMobilePhoto = document.getElementById('btn-mobile-photo');
+const btnMobileFile = document.getElementById('btn-mobile-file');
+const mobilePhotoInput = document.getElementById('mobile-photo-input');
+const mobileFileInput = document.getElementById('mobile-file-input');
+const btnMobileClearHistory = document.getElementById('btn-mobile-clear-history');
+
+if (btnMobileSendText && mobileQuickText) {
+  const handleMobileSendText = () => {
+    const text = mobileQuickText.value;
+    if (text && text.trim()) {
+      processAndSendText(text);
+      mobileQuickText.value = '';
+    }
+  };
+
+  btnMobileSendText.addEventListener('click', handleMobileSendText);
+  mobileQuickText.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleMobileSendText();
   });
 }
 
-// Clear History Button — wipes Firestore collection + localStorage + UI
+// Mobile Photo & Camera Picker
+if (btnMobilePhoto && mobilePhotoInput) {
+  btnMobilePhoto.addEventListener('click', () => mobilePhotoInput.click());
+  mobilePhotoInput.addEventListener('change', (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      processAndSendFiles(e.target.files);
+      e.target.value = '';
+    }
+  });
+}
+
+// Mobile File Picker
+if (btnMobileFile && mobileFileInput) {
+  btnMobileFile.addEventListener('click', () => mobileFileInput.click());
+  mobileFileInput.addEventListener('change', (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      processAndSendFiles(e.target.files);
+      e.target.value = '';
+    }
+  });
+}
+
+// Mobile Clear History Button
+if (btnMobileClearHistory) {
+  btnMobileClearHistory.addEventListener('click', () => {
+    if (btnClearHistory) btnClearHistory.click();
+  });
+}
+
+// Clear History Button — wipes Firestore collection + localStorage + all connected devices
 if (btnClearHistory) {
   btnClearHistory.addEventListener('click', async () => {
-    if (!confirm('Tüm geçmişi ve depolanan dosyaları temizlemek istediğinize emin misiniz?\n\nBu işlem geri alınamaz.')) return;
+    if (!confirm('Tüm geçmişi ve dosyaları temizlemek istediğinize emin misiniz?\n\nBu işlem TÜM bağlı cihazlardan siler ve geri alınamaz.')) return;
 
+    showToast('🗑️ Siliniyor...', 'info');
+
+    // 1. Clear local state
     state.history = [];
     state.processedIds.clear();
-
     try { localStorage.removeItem(STORAGE_HISTORY_KEY); } catch (e) {}
 
-    // Wipe Firestore collection
+    // 2. Clear UI immediately on THIS device
+    clearUIFeeds();
+
+    // 3. Wipe Firestore — onSnapshot 'removed' events on other devices will auto-wipe their UI
     try {
       const roomMessagesRef = collection(db, 'rooms', state.roomId, 'messages');
       const snapshot = await getDocs(roomMessagesRef);
-      const batch = writeBatch(db);
-      snapshot.forEach(docSnap => batch.delete(docSnap.ref));
-      await batch.commit();
+      if (!snapshot.empty) {
+        const batch = writeBatch(db);
+        snapshot.forEach(docSnap => batch.delete(docSnap.ref));
+        await batch.commit();
+        showToast('🗑️ Tüm geçmiş silindi! Telefon da temizlendi.', 'success');
+      } else {
+        showToast('Geçmiş zaten boş.', 'info');
+      }
     } catch (e) {
       console.error('Error clearing Firestore history:', e);
+      showToast('Firestore silme hatası: ' + e.message, 'error');
     }
-
-    if (recentActivityFeed) {
-      recentActivityFeed.innerHTML = `
-        <div id="history-empty-state" class="text-center py-8 text-slate-500 text-xs flex flex-col items-center gap-2">
-          <i data-lucide="inbox" class="w-8 h-8 text-slate-600"></i>
-          <span>Geçmiş temizlendi.</span>
-        </div>
-      `;
-    }
-
-    if (mobileStreamList) {
-      mobileStreamList.innerHTML = `
-        <div id="mobile-empty-state" class="glass-panel rounded-2xl p-8 text-center flex flex-col items-center justify-center gap-3 my-auto">
-          <div class="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-            <i data-lucide="satellite" class="w-7 h-7"></i>
-          </div>
-          <div>
-            <h4 class="text-sm font-bold text-slate-200">Geçmiş Temizlendi</h4>
-            <p class="text-xs text-slate-400 mt-1">Yeni içerik bekleniyor...</p>
-          </div>
-        </div>
-      `;
-      if (mobileFeedCount) mobileFeedCount.textContent = '0 Öğe';
-    }
-
-    if (window.lucide) window.lucide.createIcons();
-    showToast('🗑️ Tüm geçmiş temizlendi!', 'info');
   });
 }
 

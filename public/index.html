@@ -301,16 +301,53 @@
             </p>
           </div>
         </div>
-        <button id="btn-mobile-send" class="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md flex items-center gap-1.5">
-          <i data-lucide="plus" class="w-4 h-4"></i>
-          <span>PC'ye Gönder</span>
+        <button id="btn-mobile-clear-history" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700/60 transition flex items-center gap-1">
+          <i data-lucide="trash-2" class="w-3.5 h-3.5 text-rose-400"></i>
+          <span>Temizle</span>
         </button>
+      </div>
+
+      <!-- Mobile Quick Send Section (PC'ye Işınla) -->
+      <div class="glass-panel rounded-2xl p-4 flex flex-col gap-3 border border-indigo-500/30 shadow-lg">
+        <div class="flex items-center justify-between">
+          <h4 class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+            <i data-lucide="send" class="w-4 h-4 text-indigo-400"></i>
+            PC'ye Bir Şey Işınla
+          </h4>
+          <span class="text-[10px] text-slate-400">Anında Ekrana Düşer</span>
+        </div>
+
+        <!-- Quick Text/URL Input on Mobile -->
+        <div class="flex gap-2">
+          <input type="text" id="mobile-quick-text" placeholder="Yazı, link, telefon no veya not yazın..." class="flex-1 bg-slate-900/90 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition">
+          <button id="btn-mobile-send-text" class="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-bold shadow-md transition flex items-center gap-1 flex-shrink-0">
+            <i data-lucide="send" class="w-3.5 h-3.5"></i>
+            <span>Gönder</span>
+          </button>
+        </div>
+
+        <!-- Mobile Action Buttons (Photo / File Selection) -->
+        <div class="grid grid-cols-2 gap-2">
+          <button id="btn-mobile-photo" class="py-2.5 px-3 rounded-xl bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 text-xs font-semibold border border-slate-700/70 transition flex items-center justify-center gap-2 shadow-sm">
+            <i data-lucide="camera" class="w-4 h-4 text-pink-400"></i>
+            <span>Fotoğraf Çek/Seç</span>
+          </button>
+          <button id="btn-mobile-file" class="py-2.5 px-3 rounded-xl bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 text-xs font-semibold border border-slate-700/70 transition flex items-center justify-center gap-2 shadow-sm">
+            <i data-lucide="file-up" class="w-4 h-4 text-purple-400"></i>
+            <span>Dosya Seç</span>
+          </button>
+        </div>
+
+        <!-- Hidden input for Mobile Camera/Photos -->
+        <input type="file" id="mobile-photo-input" accept="image/*" class="hidden">
+        <!-- Hidden input for Mobile Files -->
+        <input type="file" id="mobile-file-input" class="hidden">
       </div>
 
       <!-- Live Stream Feed for Mobile -->
       <div class="flex flex-col gap-3">
         <div class="flex items-center justify-between px-1">
-          <h2 class="text-xs font-bold uppercase tracking-wider text-slate-400">Gelen Işınlamalar</h2>
+          <h2 class="text-xs font-bold uppercase tracking-wider text-slate-400">Işınlananlar Geçmişi</h2>
           <span id="mobile-feed-count" class="text-xs font-mono text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-full">0 Öğe</span>
         </div>
 
@@ -377,6 +414,6 @@
   <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
   <!-- App Main Logic (Firebase Serverless Module) -->
-  <script type="module" src="/app.js?v=5.1"></script>
+  <script type="module" src="/app.js?v=5.3"></script>
 </body>
 </html>
